@@ -41,8 +41,8 @@ jobs:
         id: build-vars
         shell: bash
         run: |
-          PROFILE_INPUT="${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'Server' }}"
-          LTO_INPUT="${{ github.event_name == 'workflow_dispatch' && inputs.lto || 'ThinLTO' }}"
+          PROFILE_INPUT="${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'General' }}"
+          LTO_INPUT="${{ github.event_name == 'workflow_dispatch' && inputs.lto || 'FullLTO' }}"
 
           PROFILE_INPUT="$(echo "$PROFILE_INPUT" | tr '[:upper:]' '[:lower:]')"
           LTO_INPUT="$(echo "$LTO_INPUT" | tr '[:upper:]' '[:lower:]')"
