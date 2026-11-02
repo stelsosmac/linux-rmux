@@ -268,9 +268,17 @@ else
     exit 1
 fi
 
-ensure_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
-require_custom_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
-validate_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+# SD8797 (Aeolia CUH-10xx/11xx Wi-Fi) is proprietary and not in the repo. Belize CUH-12xx uses
+# SD8897, so build without it when the Orbis blob is not provided instead of failing.
+if [[ -f "${FIRMWARE_DIR}/${REQUIRED_PS4_SD8797_FW}" ]]; then
+    ensure_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+    require_custom_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+    validate_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+    HAVE_SD8797_FW=1
+else
+    echo -e "\e[1;33mWARNING:\e[0m ${REQUIRED_PS4_SD8797_FW} not provided - building without Aeolia SD8797 Wi-Fi firmware"
+    HAVE_SD8797_FW=0
+fi
 echo -e "\e[1;34m[*]\e[0m Setting CONFIG_EXTRA_FIRMWARE_DIR=${FIRMWARE_DIR}"
 scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "${FIRMWARE_DIR}"
 
@@ -629,7 +637,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
     echo -e "\e[1;34m[*]\e[0m Running olddefconfig..."
     make "${MAKE_OPTS[@]}" olddefconfig
 
-    validate_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
+    [[ "${HAVE_SD8797_FW}" == 1 ]] && validate_extra_firmware_blob "${REQUIRED_PS4_SD8797_FW}"
 
     echo -e "\e[1;34m[*]\e[0m Running prepare..."
     make "${MAKE_OPTS[@]}" prepare
