@@ -587,9 +587,9 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --set-val CONFIG_MIN_BASE_SLICE_NS 2000000
 
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_REFLEX
-        scripts/config --enable  CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
+        scripts/config --disable CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
         scripts/config --enable  CONFIG_CPU_FREQ_GOV_SCHEDUTIL
-        scripts/config --disable CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE
+        scripts/config --enable  CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE
 
         scripts/config --enable  CONFIG_HZ_250
         scripts/config --disable CONFIG_HZ_300
@@ -609,19 +609,19 @@ if [[ "$DO_BUILD" == "1" ]]; then
         scripts/config --disable CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
         scripts/config --enable  CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
 
-        scripts/config --disable CONFIG_OVERLAY_FS
-        scripts/config --disable CONFIG_VETH
-        scripts/config --disable CONFIG_BRIDGE_NETFILTER
-        scripts/config --disable CONFIG_BRIDGE
-        scripts/config --disable CONFIG_IP6_NF_IPTABLES
-        scripts/config --disable CONFIG_IP_NF_IPTABLES
-        scripts/config --disable CONFIG_NF_TABLES_IPV6
-        scripts/config --disable CONFIG_NF_TABLES_IPV4
-        scripts/config --disable CONFIG_NF_TABLES_INET
-        scripts/config --disable CONFIG_NF_TABLES
-        scripts/config --disable CONFIG_NETFILTER_XTABLES
-        scripts/config --disable CONFIG_NETFILTER_ADVANCED
-        scripts/config --disable CONFIG_NETFILTER
+        scripts/config --enable  CONFIG_OVERLAY_FS
+        scripts/config --enable  CONFIG_VETH
+        scripts/config --enable  CONFIG_BRIDGE_NETFILTER
+        scripts/config --enable  CONFIG_BRIDGE
+        scripts/config --enable  CONFIG_IP6_NF_IPTABLES
+        scripts/config --enable  CONFIG_IP_NF_IPTABLES
+        scripts/config --enable  CONFIG_NF_TABLES_IPV6
+        scripts/config --enable  CONFIG_NF_TABLES_IPV4
+        scripts/config --enable  CONFIG_NF_TABLES_INET
+        scripts/config --enable  CONFIG_NF_TABLES
+        scripts/config --enable  CONFIG_NETFILTER_XTABLES
+        scripts/config --enable  CONFIG_NETFILTER_ADVANCED
+        scripts/config --enable  CONFIG_NETFILTER
 
         scripts/config --disable CONFIG_PSI
         scripts/config --set-str CONFIG_DEFAULT_IOSCHED "bfq"
