@@ -96,7 +96,7 @@ fail_ipc:
 fail_mq_sysctls:
 	retire_mq_sysctls(ns);
 fail_mq_mount:
-	kern_unmount(ns->mq_mnt);
+	mntput(ns->mq_mnt);
 fail_put:
 	put_user_ns(ns->user_ns);
 	ns_common_free(ns);

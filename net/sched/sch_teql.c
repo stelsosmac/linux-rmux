@@ -265,11 +265,14 @@ __teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res,
 	}
 
 	if (neigh_event_send(n, skb_res) == 0) {
+		int err;
 		char haddr[MAX_ADDR_LEN];
 
 		neigh_ha_snapshot(haddr, n, dev);
-		if (dev_hard_header(skb, dev, ntohs(skb_protocol(skb, false)),
-				    haddr, NULL, skb->len) < 0)
+		err = dev_hard_header(skb, dev, ntohs(skb_protocol(skb, false)),
+				      haddr, NULL, skb->len);
+
+		if (err < 0)
 			err = -EINVAL;
 	} else {
 		err = (skb_res == NULL) ? -EAGAIN : 1;
@@ -374,7 +377,6 @@ restart:
 			nores = 1;
 			break;
 		}
-		skb->dev = dev;
 		__skb_pull(skb, skb_network_offset(skb));
 	} while ((q = rcu_dereference(NEXT_SLAVE(q))) != start);
 

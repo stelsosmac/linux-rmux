@@ -615,11 +615,6 @@ CIFSTCon(const unsigned int xid, struct cifs_ses *ses,
 		tcon->tid = smb_buffer_response->Tid;
 		bcc_ptr = pByteArea(smb_buffer_response);
 		bytes_left = get_bcc(smb_buffer_response);
-		if (bytes_left < 2) {
-			rc = smb_EIO2(smb_eio_trace_tcon_bcc_too_small,
-				      bytes_left, 2);
-			goto out;
-		}
 		length = strnlen(bcc_ptr, bytes_left - 2);
 		if (smb_buffer->Flags2 & SMBFLG2_UNICODE)
 			is_unicode = true;
@@ -675,7 +670,6 @@ CIFSTCon(const unsigned int xid, struct cifs_ses *ses,
 			reset_cifs_unix_caps(xid, tcon, NULL, NULL);
 		}
 	}
-out:
 	cifs_buf_release(smb_buffer);
 	return rc;
 }
@@ -1687,10 +1681,8 @@ CIFSSMBRead(const unsigned int xid, struct cifs_io_parms *io_parms,
 	pSMB->hdr.PidHigh = cpu_to_le16((__u16)(pid >> 16));
 
 	/* tcon and ses pointer are checked in smb_init */
-	if (!tcon->ses->server) {
-		cifs_small_buf_release(pSMB);
+	if (tcon->ses->server == NULL)
 		return -ECONNABORTED;
-	}
 
 	pSMB->AndXCommand = 0xFF;       /* none */
 	pSMB->Fid = netfid;
@@ -1719,17 +1711,8 @@ CIFSSMBRead(const unsigned int xid, struct cifs_io_parms *io_parms,
 	pSMBr = (READ_RSP *)rsp_iov.iov_base;
 	if (rc) {
 		cifs_dbg(VFS, "Send error in read = %d\n", rc);
-	} else if (rsp_iov.iov_len < tcon->ses->server->vals->read_rsp_size) {
-		/* check that the received response can hold a whole READ_RSP */
-		cifs_dbg(FYI, "%s: server returned short header. got=%zu expected=%zu\n",
-			 __func__, rsp_iov.iov_len,
-			 tcon->ses->server->vals->read_rsp_size);
-		rc = smb_EIO2(smb_eio_trace_read_rsp_short,
-			      rsp_iov.iov_len, tcon->ses->server->vals->read_rsp_size);
-		*nbytes = 0;
 	} else {
-		unsigned int data_length = le16_to_cpu(pSMBr->DataLengthHigh);
-		__u16 data_offset = le16_to_cpu(pSMBr->DataOffset);
+		int data_length = le16_to_cpu(pSMBr->DataLengthHigh);
 		data_length = data_length << 16;
 		data_length += le16_to_cpu(pSMBr->DataLength);
 		*nbytes = data_length;
@@ -1737,21 +1720,14 @@ CIFSSMBRead(const unsigned int xid, struct cifs_io_parms *io_parms,
 		/*check that DataLength would not go beyond end of SMB */
 		if ((data_length > CIFSMaxBufSize)
 				|| (data_length > count)) {
-			cifs_dbg(FYI, "%s: bad length %u for count %u\n",
-				 __func__, data_length, count);
+			cifs_dbg(FYI, "bad length %d for count %d\n",
+				 data_length, count);
 			rc = smb_EIO2(smb_eio_trace_read_overlarge,
 				      data_length, count);
 			*nbytes = 0;
-		} else if (data_offset < sizeof(*pSMBr) ||
-			   (size_t)data_offset + data_length > rsp_iov.iov_len) {
-			/* check that the data lies within the received response */
-			cifs_dbg(FYI, "%s: bad data offset %u length %u for response of %zu\n",
-				 __func__, data_offset, data_length, rsp_iov.iov_len);
-			rc = smb_EIO2(smb_eio_trace_read_bad_offset,
-				      data_offset, data_length);
-			*nbytes = 0;
 		} else {
-			pReadData = (char *) (&pSMBr->hdr.Protocol) + data_offset;
+			pReadData = (char *) (&pSMBr->hdr.Protocol) +
+					le16_to_cpu(pSMBr->DataOffset);
 /*			if (rc = copy_to_user(buf, pReadData, data_length)) {
 				cifs_dbg(VFS, "Faulting on read rc = %d\n",rc);
 				rc = -EFAULT;
@@ -1820,10 +1796,8 @@ CIFSSMBWrite(const unsigned int xid, struct cifs_io_parms *io_parms,
 	pSMB->hdr.PidHigh = cpu_to_le16((__u16)(pid >> 16));
 
 	/* tcon and ses pointer are checked in smb_init */
-	if (!tcon->ses->server) {
-		cifs_buf_release(pSMB);
+	if (tcon->ses->server == NULL)
 		return -ECONNABORTED;
-	}
 
 	pSMB->AndXCommand = 0xFF;	/* none */
 	pSMB->Fid = netfid;
@@ -2103,10 +2077,8 @@ CIFSSMBWrite2(const unsigned int xid, struct cifs_io_parms *io_parms,
 	pSMB->hdr.PidHigh = cpu_to_le16((__u16)(pid >> 16));
 
 	/* tcon and ses pointer are checked in smb_init */
-	if (!tcon->ses->server) {
-		cifs_small_buf_release(pSMB);
+	if (tcon->ses->server == NULL)
 		return -ECONNABORTED;
-	}
 
 	pSMB->AndXCommand = 0xFF;	/* none */
 	pSMB->Fid = netfid;
@@ -3080,7 +3052,7 @@ int cifs_query_reparse_point(const unsigned int xid,
 
 	end = 2 + get_bcc(&io_rsp->hdr) + (__u8 *)&io_rsp->ByteCount;
 	start = (__u8 *)&io_rsp->hdr.Protocol + data_offset;
-	if (start >= end || (size_t)(end - start) < sizeof(*buf)) {
+	if (start >= end) {
 		rc = smb_EIO2(smb_eio_trace_qreparse_data_area,
 			      (unsigned long)start - (unsigned long)io_rsp,
 			      (unsigned long)end - (unsigned long)io_rsp);
@@ -3235,7 +3207,7 @@ out_close:
 
 int
 CIFSSMB_set_compression(const unsigned int xid, struct cifs_tcon *tcon,
-		    __u16 fid, __u16 compression_state)
+		    __u16 fid)
 {
 	int rc = 0;
 	int bytes_returned;
@@ -3250,7 +3222,7 @@ CIFSSMB_set_compression(const unsigned int xid, struct cifs_tcon *tcon,
 		return rc;
 	in_len = rc;
 
-	pSMB->compression_state = cpu_to_le16(compression_state);
+	pSMB->compression_state = cpu_to_le16(COMPRESSION_FORMAT_DEFAULT);
 
 	pSMB->TotalParameterCount = 0;
 	pSMB->TotalDataCount = cpu_to_le32(2);
@@ -3571,7 +3543,6 @@ int cifs_do_set_acl(const unsigned int xid, struct cifs_tcon *tcon,
 	int rc = 0;
 	int bytes_returned = 0;
 	__u16 params, byte_count, data_count, param_offset, offset;
-	size_t cifs_acl_size, bytes_available;
 
 	cifs_dbg(FYI, "In SetPosixACL (Unix) for path %s\n", fileName);
 setAclRetry:
@@ -3591,7 +3562,8 @@ setAclRetry:
 	}
 	params = 6 + name_len;
 	pSMB->MaxParameterCount = cpu_to_le16(2);
-	pSMB->MaxDataCount = cpu_to_le16(min_t(unsigned int, CIFSMaxBufSize, USHRT_MAX));
+	/* BB find max SMB size from sess */
+	pSMB->MaxDataCount = cpu_to_le16(1000);
 	pSMB->MaxSetupCount = 0;
 	pSMB->Reserved = 0;
 	pSMB->Flags = 0;
@@ -3602,15 +3574,6 @@ setAclRetry:
 	offset = param_offset + params;
 	parm_data = ((char *)pSMB) + offset;
 	pSMB->ParameterOffset = cpu_to_le16(param_offset);
-
-	/* make sure we can fit the larger cifs_posix_aces in the buffer */
-	cifs_acl_size = sizeof(struct cifs_posix_acl) +
-		       (acl->a_count * sizeof(struct cifs_posix_ace));
-	bytes_available = (CIFSMaxBufSize + MAX_HEADER_SIZE(tcon->ses->server)) - offset;
-	if (cifs_acl_size > bytes_available || cifs_acl_size > USHRT_MAX) {
-		rc = -E2BIG;
-		goto setACLerrorExit;
-	}
 
 	/* convert to on the wire format for POSIX ACL */
 	data_count = posix_acl_to_cifs(parm_data, acl, acl_type);
@@ -5866,6 +5829,38 @@ CIFSSMBSetFileDisposition(const unsigned int xid, struct cifs_tcon *tcon,
 	return rc;
 }
 
+static int
+CIFSSMBSetPathInfoFB(const unsigned int xid, struct cifs_tcon *tcon,
+		     const char *fileName, const FILE_BASIC_INFO *data,
+		     const struct nls_table *nls_codepage,
+		     struct cifs_sb_info *cifs_sb)
+{
+	int oplock = 0;
+	struct cifs_open_parms oparms;
+	struct cifs_fid fid;
+	int rc;
+
+	oparms = (struct cifs_open_parms) {
+		.tcon = tcon,
+		.cifs_sb = cifs_sb,
+		.desired_access = GENERIC_WRITE,
+		.create_options = cifs_create_options(cifs_sb, 0),
+		.disposition = FILE_OPEN,
+		.path = fileName,
+		.fid = &fid,
+	};
+
+	rc = CIFS_open(xid, &oparms, &oplock, NULL);
+	if (rc)
+		goto out;
+
+	rc = CIFSSMBSetFileInfo(xid, tcon, data, fid.netfid, current->tgid);
+	CIFSSMBClose(xid, tcon, fid.netfid);
+out:
+
+	return rc;
+}
+
 int
 CIFSSMBSetPathInfo(const unsigned int xid, struct cifs_tcon *tcon,
 		   const char *fileName, const FILE_BASIC_INFO *data,
@@ -5943,6 +5938,10 @@ SetTimesRetry:
 
 	if (rc == -EAGAIN)
 		goto SetTimesRetry;
+
+	if (rc == -EOPNOTSUPP)
+		return CIFSSMBSetPathInfoFB(xid, tcon, fileName, data,
+					    nls_codepage, cifs_sb);
 
 	return rc;
 }
@@ -6350,10 +6349,8 @@ CIFSSMBSetEA(const unsigned int xid, struct cifs_tcon *tcon,
 	int name_len;
 	int rc = 0;
 	int bytes_returned = 0;
-	__u16 params, param_offset;
-	unsigned int byte_count, offset, count;
+	__u16 params, param_offset, byte_count, offset, count;
 	int remap = cifs_remap(cifs_sb);
-	unsigned int total_len;
 
 	cifs_dbg(FYI, "In SetEA\n");
 SetEARetry:
@@ -6405,13 +6402,6 @@ SetEARetry:
 	pSMB->Reserved3 = 0;
 	pSMB->SubCommand = cpu_to_le16(TRANS2_SET_PATH_INFORMATION);
 	byte_count = 3 /* pad */  + params + count;
-	if (check_add_overflow(in_len, byte_count, &total_len) ||
-	    byte_count > U16_MAX ||
-	    total_len > CIFSMaxBufSize + MAX_CIFS_HDR_SIZE) {
-		cifs_dbg(VFS, "EA request too large: %u bytes\n", total_len);
-		cifs_buf_release(pSMB);
-		return -E2BIG;
-	}
 	pSMB->DataCount = cpu_to_le16(count);
 	parm_data->list_len = cpu_to_le32(count);
 	parm_data->list.EA_flags = 0;

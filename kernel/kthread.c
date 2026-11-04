@@ -852,7 +852,7 @@ int kthread_affine_preferred(struct task_struct *p, const struct cpumask *mask)
 	if (!zalloc_cpumask_var(&affinity, GFP_KERNEL))
 		return -ENOMEM;
 
-	kthread->preferred_affinity = kzalloc_obj(struct cpumask);
+	kthread->preferred_affinity = kzalloc(sizeof(struct cpumask), GFP_KERNEL);
 	if (!kthread->preferred_affinity) {
 		ret = -ENOMEM;
 		goto out;
@@ -1619,6 +1619,7 @@ void kthread_use_mm(struct mm_struct *mm)
 
 	WARN_ON_ONCE(!(tsk->flags & PF_KTHREAD));
 	WARN_ON_ONCE(tsk->mm);
+	WARN_ON_ONCE(!mm->user_ns);
 
 	/*
 	 * It is possible for mm to be the same as tsk->active_mm, but

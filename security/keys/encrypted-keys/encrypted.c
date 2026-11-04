@@ -19,7 +19,6 @@
 #include <linux/parser.h>
 #include <linux/string.h>
 #include <linux/err.h>
-#include <linux/overflow.h>
 #include <keys/user-type.h>
 #include <keys/trusted-type.h>
 #include <keys/encrypted-type.h>
@@ -344,9 +343,9 @@ static int get_derived_key(u8 *derived_key, enum derived_key_type key_type,
 		return -ENOMEM;
 
 	if (key_type)
-		strscpy(derived_buf, "AUTH_KEY", HASH_SIZE);
+		strcpy(derived_buf, "AUTH_KEY");
 	else
-		strscpy(derived_buf, "ENC_KEY", HASH_SIZE);
+		strcpy(derived_buf, "ENC_KEY");
 
 	memcpy(derived_buf + strlen(derived_buf) + 1, master_key,
 	       master_keylen);
@@ -580,7 +579,6 @@ static struct encrypted_key_payload *encrypted_key_alloc(struct key *key,
 {
 	struct encrypted_key_payload *epayload = NULL;
 	unsigned short datablob_len;
-	unsigned short payload_totallen;
 	unsigned short decrypted_datalen;
 	unsigned short payload_datalen;
 	unsigned int encrypted_datalen;
@@ -634,22 +632,16 @@ static struct encrypted_key_payload *encrypted_key_alloc(struct key *key,
 
 	encrypted_datalen = roundup(decrypted_datalen, blksize);
 
-	if (check_add_overflow(format_len + 1 + strlen(master_desc) + 1
-			       + strlen(datalen) + 1 + ivsize + 1,
-			       encrypted_datalen, &datablob_len))
-		return ERR_PTR(-EINVAL);
+	datablob_len = format_len + 1 + strlen(master_desc) + 1
+	    + strlen(datalen) + 1 + ivsize + 1 + encrypted_datalen;
 
-	if (check_add_overflow(datablob_len,
-			       payload_datalen + HASH_SIZE + 1,
-			       &payload_totallen))
-		return ERR_PTR(-EINVAL);
-
-	ret = key_payload_reserve(key, payload_totallen);
+	ret = key_payload_reserve(key, payload_datalen + datablob_len
+				  + HASH_SIZE + 1);
 	if (ret < 0)
 		return ERR_PTR(ret);
 
-	epayload = kzalloc_flex(*epayload, payload_data, payload_totallen,
-				GFP_KERNEL);
+	epayload = kzalloc(sizeof(*epayload) + payload_datalen +
+			   datablob_len + HASH_SIZE + 1, GFP_KERNEL);
 	if (!epayload)
 		return ERR_PTR(-ENOMEM);
 

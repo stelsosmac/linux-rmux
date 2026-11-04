@@ -189,12 +189,13 @@ int arch_cpuhp_kick_ap_alive(unsigned int cpu, struct task_struct *tidle)
 #else
 int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
-	int ret;
+	int ret = 0;
 	tidle->thread_info.cpu = cpu;
 
 	ret = start_secondary_cpu(cpu, tidle);
 	if (!ret) {
-		wait_for_completion_timeout(&cpu_running, secs_to_jiffies(1));
+		wait_for_completion_timeout(&cpu_running,
+					    msecs_to_jiffies(1000));
 
 		if (!cpu_online(cpu)) {
 			pr_crit("CPU%u: failed to come online\n", cpu);
@@ -243,8 +244,6 @@ asmlinkage __visible void smp_callin(void)
 	riscv_ipi_enable();
 
 	numa_add_cpu(curr_cpuid);
-
-	riscv_clear_hypervisor_csr();
 
 	pr_debug("CPU%u: Booted secondary hartid %lu\n", curr_cpuid,
 		cpuid_to_hartid_map(curr_cpuid));

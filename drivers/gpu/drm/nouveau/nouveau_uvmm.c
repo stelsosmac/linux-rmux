@@ -846,9 +846,6 @@ op_map(struct nouveau_uvma *uvma)
 {
 	struct nouveau_bo *nvbo = nouveau_gem_object(uvma->va.gem.obj);
 
-	if (drm_gpuva_invalidated(&uvma->va))
-		return;
-
 	nouveau_uvma_map(uvma, nouveau_mem(nvbo->bo.resource));
 }
 
@@ -1235,7 +1232,6 @@ bind_lock_validate(struct nouveau_job *job, struct drm_exec *exec,
 
 		drm_gpuva_for_each_op(va_op, op->ops) {
 			struct drm_gem_object *obj = op_gem_obj(va_op);
-			struct nouveau_bo *nvbo;
 
 			if (unlikely(!obj))
 				continue;
@@ -1250,13 +1246,8 @@ bind_lock_validate(struct nouveau_job *job, struct drm_exec *exec,
 			if (va_op->op == DRM_GPUVA_OP_UNMAP)
 				continue;
 
-			nvbo = nouveau_gem_object(obj);
-			if (!(nvbo->valid_domains &
-			      (NOUVEAU_GEM_DOMAIN_VRAM | NOUVEAU_GEM_DOMAIN_GART)))
-				return -EINVAL;
-
-			nouveau_bo_placement_set(nvbo, nvbo->valid_domains, 0);
-			ret = nouveau_bo_validate(nvbo, true, false);
+			ret = nouveau_bo_validate(nouveau_gem_object(obj),
+						  true, false);
 			if (ret)
 				return ret;
 		}
@@ -1328,7 +1319,6 @@ nouveau_uvmm_bind_job_submit(struct nouveau_job *job,
 							   op->va.range);
 			if (!op->reg || op->reg->dirty) {
 				ret = -ENOENT;
-				op->reg = NULL;
 				goto unwind_continue;
 			}
 
@@ -1337,7 +1327,6 @@ nouveau_uvmm_bind_job_submit(struct nouveau_job *job,
 								op->va.range);
 			if (IS_ERR(op->ops)) {
 				ret = PTR_ERR(op->ops);
-				op->reg = NULL;
 				goto unwind_continue;
 			}
 
@@ -1484,7 +1473,6 @@ unwind:
 						    op->va.range);
 			break;
 		case OP_UNMAP_SPARSE:
-			op->reg->dirty = false;
 			__nouveau_uvma_region_insert(uvmm, op->reg);
 			nouveau_uvmm_sm_unmap_prepare_unwind(uvmm, &op->new,
 							     op->ops);
@@ -1501,8 +1489,7 @@ unwind:
 			break;
 		}
 
-		if (!IS_ERR_OR_NULL(op->ops))
-			drm_gpuva_ops_free(&uvmm->base, op->ops);
+		drm_gpuva_ops_free(&uvmm->base, op->ops);
 		op->ops = NULL;
 		op->reg = NULL;
 	}

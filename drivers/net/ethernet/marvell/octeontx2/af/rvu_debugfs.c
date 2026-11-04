@@ -714,72 +714,110 @@ static int get_max_column_width(struct rvu *rvu)
 }
 
 /* Dumps current provisioning status of all RVU block LFs */
-static int rvu_dbg_rsrc_attach_status(struct seq_file *filp, void *unused)
+static ssize_t rvu_dbg_rsrc_attach_status(struct file *filp,
+					  char __user *buffer,
+					  size_t count, loff_t *ppos)
 {
-	struct rvu *rvu = filp->private;
-	int index, pf, vf, pcifunc;
+	int index, off = 0, flag = 0, len = 0, i = 0;
+	struct rvu *rvu = filp->private_data;
+	int bytes_not_copied = 0;
 	struct rvu_block block;
+	int pf, vf, pcifunc;
+	int buf_size = 2048;
 	int lf_str_size;
 	char *lfs;
+	char *buf;
 
-	lf_str_size = get_max_column_width(rvu);
-	if (lf_str_size < 0)
-		return lf_str_size;
+	/* don't allow partial reads */
+	if (*ppos != 0)
+		return 0;
 
-	lfs = kzalloc(lf_str_size, GFP_KERNEL);
-	if (!lfs)
+	buf = kzalloc(buf_size, GFP_KERNEL);
+	if (!buf)
 		return -ENOMEM;
 
-	seq_printf(filp, "%-*s", lf_str_size, "pcifunc");
-	for (index = 0; index < BLK_COUNT; index++)
-		if (strlen(rvu->hw->block[index].name))
-			seq_printf(filp, "%-*s", lf_str_size,
-				   rvu->hw->block[index].name);
+	/* Get the maximum width of a column */
+	lf_str_size = get_max_column_width(rvu);
 
-	seq_putc(filp, '\n');
+	lfs = kzalloc(lf_str_size, GFP_KERNEL);
+	if (!lfs) {
+		kfree(buf);
+		return -ENOMEM;
+	}
+	off +=	scnprintf(&buf[off], buf_size - 1 - off, "%-*s", lf_str_size,
+			  "pcifunc");
+	for (index = 0; index < BLK_COUNT; index++)
+		if (strlen(rvu->hw->block[index].name)) {
+			off += scnprintf(&buf[off], buf_size - 1 - off,
+					 "%-*s", lf_str_size,
+					 rvu->hw->block[index].name);
+		}
+
+	off += scnprintf(&buf[off], buf_size - 1 - off, "\n");
+	bytes_not_copied = copy_to_user(buffer + (i * off), buf, off);
+	if (bytes_not_copied)
+		goto out;
+
+	i++;
+	*ppos += off;
 	for (pf = 0; pf < rvu->hw->total_pfs; pf++) {
 		for (vf = 0; vf <= rvu->hw->total_vfs; vf++) {
+			off = 0;
+			flag = 0;
 			pcifunc = rvu_make_pcifunc(rvu->pdev, pf, vf);
 			if (!pcifunc)
 				continue;
 
+			if (vf) {
+				sprintf(lfs, "PF%d:VF%d", pf, vf - 1);
+				off = scnprintf(&buf[off],
+						buf_size - 1 - off,
+						"%-*s", lf_str_size, lfs);
+			} else {
+				sprintf(lfs, "PF%d", pf);
+				off = scnprintf(&buf[off],
+						buf_size - 1 - off,
+						"%-*s", lf_str_size, lfs);
+			}
+
 			for (index = 0; index < BLK_COUNT; index++) {
 				block = rvu->hw->block[index];
 				if (!strlen(block.name))
 					continue;
-				lfs[0] = '\0';
+				len = 0;
+				lfs[len] = '\0';
 				get_lf_str_list(&block, pcifunc, lfs);
 				if (strlen(lfs))
-					break;
+					flag = 1;
+
+				off += scnprintf(&buf[off], buf_size - 1 - off,
+						 "%-*s", lf_str_size, lfs);
 			}
-			if (index == BLK_COUNT)
-				continue;
+			if (flag) {
+				off +=	scnprintf(&buf[off],
+						  buf_size - 1 - off, "\n");
+				bytes_not_copied = copy_to_user(buffer +
+								(i * off),
+								buf, off);
+				if (bytes_not_copied)
+					goto out;
 
-			if (vf)
-				sprintf(lfs, "PF%d:VF%d", pf, vf - 1);
-			else
-				sprintf(lfs, "PF%d", pf);
-			seq_printf(filp, "%-*s", lf_str_size, lfs);
-
-			for (index = 0; index < BLK_COUNT; index++) {
-				block = rvu->hw->block[index];
-				if (!strlen(block.name))
-					continue;
-
-				lfs[0] = '\0';
-				get_lf_str_list(&block, pcifunc, lfs);
-				seq_printf(filp, "%-*s", lf_str_size, lfs);
+				i++;
+				*ppos += off;
 			}
-			seq_putc(filp, '\n');
 		}
 	}
 
+out:
 	kfree(lfs);
+	kfree(buf);
+	if (bytes_not_copied)
+		return -EFAULT;
 
-	return 0;
+	return *ppos;
 }
 
-RVU_DEBUG_SEQ_FOPS(rsrc_status, rsrc_attach_status, NULL);
+RVU_DEBUG_FOPS(rsrc_status, rsrc_attach_status, NULL);
 
 static int rvu_dbg_rvu_pf_cgx_map_display(struct seq_file *filp, void *unused)
 {
@@ -791,25 +829,19 @@ static int rvu_dbg_rvu_pf_cgx_map_display(struct seq_file *filp, void *unused)
 	int pf, domain, blkid;
 	u8 cgx_id, lmac_id;
 	u16 pcifunc;
-	u8 start;
 
-	domain = pci_domain_nr(rvu->pdev->bus);
+	domain = 2;
 	mac_ops = get_mac_ops(rvu_first_cgx_pdata(rvu));
 	/* There can be no CGX devices at all */
 	if (!mac_ops)
 		return 0;
 	seq_printf(filp, "PCI dev\t\tRVU PF Func\tNIX block\t%s\tLMAC\tCHAN\n",
 		   mac_ops->name);
-
-	/* All the PF devices are on contiguous PCI bus numbers, but the PF0(AF)
-	 * may not start from 1 always. Hence get domain and bus from PCI device.
-	 */
-	start = rvu->pdev->bus->number;
 	for (pf = 0; pf < rvu->hw->total_pfs; pf++) {
 		if (!is_pf_cgxmapped(rvu, pf))
 			continue;
 
-		pdev =  pci_get_domain_bus_and_slot(domain, pf + start, 0);
+		pdev =  pci_get_domain_bus_and_slot(domain, pf + 1, 0);
 		if (!pdev)
 			continue;
 
@@ -1665,12 +1697,6 @@ static int rvu_dbg_nix_tm_tree_display(struct seq_file *m, void *unused)
 		return -EINVAL;
 
 	pfvf = rvu_get_pfvf(rvu, pcifunc);
-
-	if (!pfvf->sq_ctx) {
-		seq_printf(m, "SQ context is not initialized for pcifunc 0x%x\n", pcifunc);
-		return -EINVAL;
-	}
-
 	max_id = pfvf->sq_ctx->qsize;
 
 	memset(&aq_req, 0, sizeof(struct nix_aq_enq_req));

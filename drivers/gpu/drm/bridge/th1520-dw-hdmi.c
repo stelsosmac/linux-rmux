@@ -9,6 +9,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
@@ -135,8 +136,8 @@ static int th1520_dw_hdmi_probe(struct platform_device *pdev)
 	plat_data->priv_data = hdmi;
 
 	hdmi->dw_hdmi = dw_hdmi_probe(pdev, plat_data);
-	if (IS_ERR(hdmi->dw_hdmi))
-		return PTR_ERR(hdmi->dw_hdmi);
+	if (IS_ERR(hdmi))
+		return PTR_ERR(hdmi);
 
 	platform_set_drvdata(pdev, hdmi);
 
@@ -145,9 +146,9 @@ static int th1520_dw_hdmi_probe(struct platform_device *pdev)
 
 static void th1520_dw_hdmi_remove(struct platform_device *pdev)
 {
-	struct th1520_hdmi *hdmi = platform_get_drvdata(pdev);
+	struct dw_hdmi *hdmi = platform_get_drvdata(pdev);
 
-	dw_hdmi_remove(hdmi->dw_hdmi);
+	dw_hdmi_remove(hdmi);
 }
 
 static const struct of_device_id th1520_dw_hdmi_of_table[] = {

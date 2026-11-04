@@ -108,98 +108,68 @@ mt792x_asar_acpi_read_mtcl(struct mt792x_dev *dev, u8 **table, u8 *version)
 	return ret;
 }
 
-/* A table's layout is decided by the version byte in MTCL, but some firmware
- * labels a version 2 table as version 1.  Accept whichever layout the table
- * actually has: for every accepted entry count the two do not overlap, since
- * one is 6 + 5n bytes and the other 7 + 7n.
- */
-static bool
-mt792x_asar_fits(u8 *table, int len, int prelen, int sarlen, int nr_off,
-		 int min, int max)
-{
-	int tblcnt;
-
-	if (len < prelen || (len - prelen) % sarlen)
-		return false;
-
-	tblcnt = (len - prelen) / sarlen;
-	if (tblcnt < min || tblcnt > max)
-		return false;
-
-	return tblcnt == table[nr_off];
-}
-
 /* MTDS : Dynamic SAR Power Table */
 static int
-mt792x_asar_acpi_read_mtds(struct mt792x_dev *dev, u8 **table, u8 version,
-			   u8 *used)
+mt792x_asar_acpi_read_mtds(struct mt792x_dev *dev, u8 **table, u8 version)
 {
-	int len, ret;
-	u8 *t;
+	int len, ret, sarlen, prelen, tblcnt;
+	bool enable;
 
 	ret = mt792x_acpi_read(dev, MT792x_ACPI_MTDS, table, &len);
 	if (ret)
 		return ret;
 
-	t = *table;
-
 	/* Table content validation */
-	if (mt792x_asar_fits(t, len, sizeof(struct mt792x_asar_dyn),
-			     sizeof(struct mt792x_asar_dyn_limit),
-			     offsetof(struct mt792x_asar_dyn, nr_tbl),
-			     MT792x_ASAR_MIN_DYN, MT792x_ASAR_MAX_DYN))
-		*used = 1;
-	else if (mt792x_asar_fits(t, len, sizeof(struct mt792x_asar_dyn_v2),
-				  sizeof(struct mt792x_asar_dyn_limit_v2),
-				  offsetof(struct mt792x_asar_dyn_v2, nr_tbl),
-				  MT792x_ASAR_MIN_DYN, MT792x_ASAR_MAX_DYN))
-		*used = 2;
-	else
+	switch (version) {
+	case 1:
+		enable = ((struct mt792x_asar_dyn *)*table)->enable;
+		sarlen = sizeof(struct mt792x_asar_dyn_limit);
+		prelen = sizeof(struct mt792x_asar_dyn);
+		break;
+	case 2:
+		enable = ((struct mt792x_asar_dyn_v2 *)*table)->enable;
+		sarlen = sizeof(struct mt792x_asar_dyn_limit_v2);
+		prelen = sizeof(struct mt792x_asar_dyn_v2);
+		break;
+	default:
 		return -EINVAL;
+	}
 
-	if (!t[offsetof(struct mt792x_asar_dyn, enable)])
+	tblcnt = (len - prelen) / sarlen;
+	if (!enable ||
+	    tblcnt > MT792x_ASAR_MAX_DYN || tblcnt < MT792x_ASAR_MIN_DYN)
 		return -EINVAL;
-
-	if (version && *used != version)
-		dev_info(dev->mt76.dev,
-			 "MTDS is v%u, MTCL says v%u; using v%u\n",
-			 *used, version, *used);
 
 	return 0;
 }
 
 /* MTGS : Geo SAR Power Table */
 static int
-mt792x_asar_acpi_read_mtgs(struct mt792x_dev *dev, u8 **table, u8 version,
-			   u8 *used)
+mt792x_asar_acpi_read_mtgs(struct mt792x_dev *dev, u8 **table, u8 version)
 {
-	int len, ret;
-	u8 *t;
+	int len, ret, sarlen, prelen, tblcnt;
 
 	ret = mt792x_acpi_read(dev, MT792x_ACPI_MTGS, table, &len);
 	if (ret)
 		return ret;
 
-	t = *table;
-
 	/* Table content validation */
-	if (mt792x_asar_fits(t, len, sizeof(struct mt792x_asar_geo),
-			     sizeof(struct mt792x_asar_geo_limit),
-			     offsetof(struct mt792x_asar_geo, nr_tbl),
-			     MT792x_ASAR_MIN_GEO, MT792x_ASAR_MAX_GEO))
-		*used = 1;
-	else if (mt792x_asar_fits(t, len, sizeof(struct mt792x_asar_geo_v2),
-				  sizeof(struct mt792x_asar_geo_limit_v2),
-				  offsetof(struct mt792x_asar_geo_v2, nr_tbl),
-				  MT792x_ASAR_MIN_GEO, MT792x_ASAR_MAX_GEO))
-		*used = 2;
-	else
+	switch (version) {
+	case 1:
+		sarlen = sizeof(struct mt792x_asar_geo_limit);
+		prelen = sizeof(struct mt792x_asar_geo);
+		break;
+	case 2:
+		sarlen = sizeof(struct mt792x_asar_geo_limit_v2);
+		prelen = sizeof(struct mt792x_asar_geo_v2);
+		break;
+	default:
 		return -EINVAL;
+	}
 
-	if (version && *used != version)
-		dev_info(dev->mt76.dev,
-			 "MTGS is v%u, MTCL says v%u; using v%u\n",
-			 *used, version, *used);
+	tblcnt = (len - prelen) / sarlen;
+	if (tblcnt > MT792x_ASAR_MAX_GEO || tblcnt < MT792x_ASAR_MIN_GEO)
+		return -EINVAL;
 
 	return 0;
 }
@@ -235,16 +205,14 @@ int mt792x_init_acpi_sar(struct mt792x_dev *dev)
 		asar->countrylist = NULL;
 	}
 
-	ret = mt792x_asar_acpi_read_mtds(dev, (u8 **)&asar->dyn, asar->ver,
-					 &asar->dyn_ver);
+	ret = mt792x_asar_acpi_read_mtds(dev, (u8 **)&asar->dyn, asar->ver);
 	if (ret) {
 		devm_kfree(dev->mt76.dev, asar->dyn);
 		asar->dyn = NULL;
 	}
 
 	/* MTGS is optional */
-	ret = mt792x_asar_acpi_read_mtgs(dev, (u8 **)&asar->geo, asar->ver,
-					 &asar->geo_ver);
+	ret = mt792x_asar_acpi_read_mtgs(dev, (u8 **)&asar->geo, asar->ver);
 	if (ret) {
 		devm_kfree(dev->mt76.dev, asar->geo);
 		asar->geo = NULL;
@@ -286,7 +254,7 @@ mt792x_asar_get_geo_pwr(struct mt792x_phy *phy,
 		break;
 	}
 
-	if (asar->geo_ver == 1) {
+	if (asar->ver == 1) {
 		band_pwr = &asar->geo->tbl[idx].band[0];
 		max = ARRAY_SIZE(asar->geo->tbl[idx].band);
 	} else {
@@ -311,18 +279,10 @@ mt792x_asar_get_geo_pwr(struct mt792x_phy *phy,
 	if (idx >= max)
 		return dyn_power;
 
-	band_pwr += idx;
+	geo_power = (band_pwr + idx)->pwr;
+	dyn_power += (band_pwr + idx)->offset;
 
-	/* Some OEM tables carry 0xff here; narrowed to s8 that is -1 and
-	 * wins the min() below. Take it as no limit.
-	 */
-	if (band_pwr->pwr == 0xff)
-		return dyn_power;
-
-	geo_power = band_pwr->pwr;
-
-	return min_t(int, geo_power,
-		     min_t(int, dyn_power + band_pwr->offset, 127));
+	return min(geo_power, dyn_power);
 }
 
 static s8
@@ -337,7 +297,7 @@ mt792x_asar_range_pwr(struct mt792x_phy *phy,
 	if (!capa)
 		return 127;
 
-	if (asar->dyn_ver == 1) {
+	if (asar->ver == 1) {
 		limit = &asar->dyn->tbl[0].frp[0];
 		max = ARRAY_SIZE(asar->dyn->tbl[0].frp);
 	} else {
@@ -355,9 +315,7 @@ mt792x_asar_range_pwr(struct mt792x_phy *phy,
 	else
 		band = NL80211_BAND_2GHZ;
 
-	/* 0xff: no dynamic limit, see mt792x_asar_get_geo_pwr() */
-	return mt792x_asar_get_geo_pwr(phy, band,
-				       limit[idx] == 0xff ? 127 : limit[idx]);
+	return mt792x_asar_get_geo_pwr(phy, band, limit[idx]);
 }
 
 int mt792x_init_acpi_sar_power(struct mt792x_phy *phy, bool set_default)
@@ -365,8 +323,7 @@ int mt792x_init_acpi_sar_power(struct mt792x_phy *phy, bool set_default)
 	const struct cfg80211_sar_capa *capa = phy->mt76->hw->wiphy->sar_capa;
 	int i;
 
-	if (!capa || !phy->acpisar ||
-	    !((struct mt792x_acpi_sar *)phy->acpisar)->dyn)
+	if (!phy->acpisar || !((struct mt792x_acpi_sar *)phy->acpisar)->dyn)
 		return 0;
 
 	/* When ACPI SAR enabled in HW, we should apply rules for .frp

@@ -1002,7 +1002,8 @@ static struct nd_region *nd_region_create(struct nvdimm_bus *nvdimm_bus,
 	nd_region->num_lanes = ndr_desc->num_lanes;
 	if (!nd_region->num_lanes)
 		goto err_percpu;
-	nd_region->lane = kzalloc_objs(*nd_region->lane, nd_region->num_lanes);
+	nd_region->lane = kcalloc(nd_region->num_lanes,
+				  sizeof(*nd_region->lane), GFP_KERNEL);
 	if (!nd_region->lane)
 		goto err_percpu;
 
@@ -1092,10 +1093,7 @@ int nvdimm_flush(struct nd_region *nd_region, struct bio *bio)
 	if (!nd_region->flush)
 		rc = generic_nvdimm_flush(nd_region);
 	else {
-		rc = nd_region->flush(nd_region, bio);
-		if (rc > 0)
-			return rc;
-		if (rc && rc != -ENOMEM)
+		if (nd_region->flush(nd_region, bio))
 			rc = -EIO;
 	}
 

@@ -328,10 +328,4 @@ VOID p2pSetSuspendMode(P_GLUE_INFO_T prGlueInfo, BOOLEAN fgEnable);
 BOOLEAN glP2pCreateWirelessDevice(P_GLUE_INFO_T prGlueInfo);
 VOID glP2pDestroyWirelessDevice(VOID);
 VOID p2pUpdateChannelTableByDomain(P_GLUE_INFO_T prGlueInfo);
-
-int mtk_p2p_cfg80211_remain_on_channel_v73(struct wiphy *wiphy, struct wireless_dev *wdev,
-					   struct ieee80211_channel *chan, unsigned int duration,
-					   u64 cookie, const u8 *link_addr);
-int mtk_p2p_cfg80211_mgmt_tx_v73(struct wiphy *wiphy, struct wireless_dev *wdev,
-				 struct cfg80211_mgmt_tx_params *params, u64 cookie);
 #endif

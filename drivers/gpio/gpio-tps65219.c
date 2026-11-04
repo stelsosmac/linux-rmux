@@ -79,7 +79,7 @@ static int tps65219_gpio_get(struct gpio_chip *gc, unsigned int offset)
 	if (ret)
 		return ret;
 
-	ret = !!(val & TPS65219_MFP_GPIO_STATUS_MASK);
+	ret = !!(val & BIT(TPS65219_MFP_GPIO_STATUS_MASK));
 	dev_warn(dev, "GPIO%d = %d, MULTI_DEVICE_ENABLE, not a standard GPIO\n", offset, ret);
 
 	/*
@@ -87,7 +87,7 @@ static int tps65219_gpio_get(struct gpio_chip *gc, unsigned int offset)
 	 * status bit.
 	 */
 
-	if (gc->get_direction(gc, offset) == GPIO_LINE_DIRECTION_OUT)
+	if (tps65219_gpio_get_direction(gc, offset) == GPIO_LINE_DIRECTION_OUT)
 		return -ENOTSUPP;
 
 	return ret;
@@ -158,10 +158,8 @@ static int tps65214_gpio_change_direction(struct gpio_chip *gc, unsigned int off
 	if (ret)
 		dev_err(dev, "GPIO%d configured as VSEL, not GPIO\n", offset);
 
-	val = direction == GPIO_LINE_DIRECTION_OUT ?
-		TPS65214_GPIO0_DIR_MASK : 0;
 	ret = regmap_update_bits(gpio->tps->regmap, TPS65219_REG_GENERAL_CONFIG,
-				 TPS65214_GPIO0_DIR_MASK, val);
+				 TPS65214_GPIO0_DIR_MASK, direction);
 	if (ret)
 		dev_err(dev, "Fail to change direction to %u for GPIO%d.\n", direction, offset);
 
@@ -178,7 +176,7 @@ static int tps65219_gpio_direction_input(struct gpio_chip *gc, unsigned int offs
 		return -ENOTSUPP;
 	}
 
-	if (gc->get_direction(gc, offset) == GPIO_LINE_DIRECTION_IN)
+	if (tps65219_gpio_get_direction(gc, offset) == GPIO_LINE_DIRECTION_IN)
 		return 0;
 
 	return gpio->change_dir(gc, offset, GPIO_LINE_DIRECTION_IN);
@@ -192,7 +190,7 @@ static int tps65219_gpio_direction_output(struct gpio_chip *gc, unsigned int off
 	if (offset != TPS6521X_GPIO0_IDX)
 		return 0;
 
-	if (gc->get_direction(gc, offset) == GPIO_LINE_DIRECTION_OUT)
+	if (tps65219_gpio_get_direction(gc, offset) == GPIO_LINE_DIRECTION_OUT)
 		return 0;
 
 	return gpio->change_dir(gc, offset, GPIO_LINE_DIRECTION_OUT);
@@ -251,8 +249,8 @@ static int tps65219_gpio_probe(struct platform_device *pdev)
 }
 
 static const struct platform_device_id tps6521x_gpio_id_table[] = {
-	{ .name = "tps65214-gpio", .driver_data = TPS65214 },
-	{ .name = "tps65219-gpio", .driver_data = TPS65219 },
+	{ "tps65214-gpio", TPS65214 },
+	{ "tps65219-gpio", TPS65219 },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(platform, tps6521x_gpio_id_table);

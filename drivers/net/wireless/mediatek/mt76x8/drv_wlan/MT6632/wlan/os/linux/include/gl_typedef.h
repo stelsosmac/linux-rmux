@@ -63,23 +63,6 @@
 #ifndef _GL_TYPEDEF_H
 #define _GL_TYPEDEF_H
 
-
-#include <linux/string.h>
-/* Linux 7.3 removed strncpy(); keep its exact semantics (zero padding) for this vendor driver. */
-#ifndef MT_STRNCPY_SHIM
-#define MT_STRNCPY_SHIM
-static inline char *mt_strncpy(char *dest, const char *src, size_t n)
-{
-	size_t i;
-
-	for (i = 0; i < n && src[i]; i++)
-		dest[i] = src[i];
-	for (; i < n; i++)
-		dest[i] = '\0';
-	return dest;
-}
-#define strncpy mt_strncpy
-#endif
 #if CFG_ENABLE_EARLY_SUSPEND
 #include <linux/earlysuspend.h>
 #endif

@@ -1134,8 +1134,6 @@ int vc_allocate(unsigned int currcons)	/* return 0 on success */
 	return 0;
 err_free:
 	visual_deinit(vc);
-	if (*vc->uni_pagedict_loc)
-		con_free_unimap(vc);
 	kfree(vc);
 	vc_cons[currcons].d = NULL;
 	return err;
@@ -2862,8 +2860,7 @@ static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, u8 c)
 			csi_J(vc, CSI_J_VISIBLE);
 			vc->vc_video_erase_char =
 				(vc->vc_video_erase_char & 0xff00) | ' ';
-			if (con_should_update(vc))
-				do_update_region(vc, vc->vc_origin, vc->vc_screenbuf_size / 2);
+			do_update_region(vc, vc->vc_origin, vc->vc_screenbuf_size / 2);
 		}
 		return;
 	case ESsetG0:	/* ESC ( */
@@ -3097,12 +3094,8 @@ static void vc_con_rewind(struct vc_data *vc)
 static int vc_process_ucs(struct vc_data *vc, int *c, int *tc)
 {
 	u32 prev_c, curr_c = *c;
-	unsigned int w = ucs_get_width(curr_c);
 
-	if (likely(w == 1))
-		return 1;
-
-	if (w == 2) {
+	if (ucs_is_double_width(curr_c)) {
 		/*
 		 * The Unicode screen memory is allocated only when
 		 * required. This is one such case as we need to remember
@@ -3112,9 +3105,12 @@ static int vc_process_ucs(struct vc_data *vc, int *c, int *tc)
 		return 2;
 	}
 
+	if (!ucs_is_zero_width(curr_c))
+		return 1;
+
 	/* From here curr_c is known to be zero-width. */
 
-	if (ucs_get_width(vc_uniscr_getc(vc, -2)) == 2) {
+	if (ucs_is_double_width(vc_uniscr_getc(vc, -2))) {
 		/*
 		 * Let's merge this zero-width code point with the preceding
 		 * double-width code point by replacing the existing
@@ -3982,6 +3978,9 @@ int __init vty_init(const struct file_operations *console_fops)
 		panic("Couldn't register console driver\n");
 	kbd_init();
 	console_map_init();
+#ifdef CONFIG_MDA_CONSOLE
+	mda_console_init();
+#endif
 	return 0;
 }
 
@@ -4989,8 +4988,8 @@ static int con_font_set(struct vc_data *vc, const struct console_font_op *op)
 	if (!vc->vc_sw->con_font_set)
 		return -ENOSYS;
 
-	/* hide selection and cursor prior font changes */
-	hide_cursor(vc);
+	if (vc_is_sel(vc))
+		clear_selection();
 
 	return vc->vc_sw->con_font_set(vc, &font, vpitch, op->flags);
 }
@@ -5014,9 +5013,8 @@ static int con_font_default(struct vc_data *vc, struct console_font_op *op)
 		if (!vc->vc_sw->con_font_default)
 			return -ENOSYS;
 
-		/* hide selection and cursor prior font changes */
-		hide_cursor(vc);
-
+		if (vc_is_sel(vc))
+			clear_selection();
 		int ret = vc->vc_sw->con_font_default(vc, &font, s);
 		if (ret)
 			return ret;

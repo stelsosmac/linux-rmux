@@ -23,6 +23,7 @@
 #include <linux/limits.h>
 #include <linux/list.h>
 #include <linux/lockdep.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
@@ -692,8 +693,7 @@ static int gpio_virtuser_interrupts_set(void *data, u64 val)
 		atomic_set(&ld->irq, irq);
 	} else {
 		irq = atomic_xchg(&ld->irq, 0);
-		if (irq)
-			free_irq(irq, ld);
+		free_irq(irq, ld);
 	}
 
 	return 0;
@@ -1430,7 +1430,8 @@ gpio_virtuser_make_device_swnode(struct gpio_virtuser_device *dev)
 	memset(properties, 0, sizeof(properties));
 
 	num_ids = list_count_nodes(&dev->lookup_list);
-	char **ids __free(kfree) = kzalloc_objs(*ids, num_ids + 1);
+	char **ids __free(kfree) = kcalloc(num_ids + 1, sizeof(*ids),
+					   GFP_KERNEL);
 	if (!ids)
 		return ERR_PTR(-ENOMEM);
 

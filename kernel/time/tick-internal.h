@@ -3,7 +3,6 @@
  * tick internal variable and functions used by low/high res code
  */
 #include <linux/hrtimer.h>
-#include <linux/hrtimer_bases.h>
 #include <linux/tick.h>
 
 #include "timekeeping.h"
@@ -55,8 +54,6 @@ static inline void clockevent_set_state(struct clock_event_device *dev,
 }
 
 extern void clockevents_shutdown(struct clock_event_device *dev);
-extern void __clockevents_exchange_device(struct clock_event_device *old,
-					  struct clock_event_device *new);
 extern void clockevents_exchange_device(struct clock_event_device *old,
 					struct clock_event_device *new);
 extern void clockevents_switch_state(struct clock_event_device *dev,

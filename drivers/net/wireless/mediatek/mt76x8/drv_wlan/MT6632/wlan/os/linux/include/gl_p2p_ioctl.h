@@ -504,9 +504,17 @@ int mtk_p2p_cfg80211_get_txpower(struct wiphy *wiphy, struct wireless_dev *wdev,
 int mtk_p2p_cfg80211_get_txpower(struct wiphy *wiphy, struct wireless_dev *wdev, int *dbm);
 #endif
 
+/* Linux 7.2 added rx_addr to remain_on_channel; see gl_p2p_cfg80211.c. */
+#if KERNEL_VERSION(7, 2, 0) <= CFG80211_VERSION_CODE
+int mtk_p2p_cfg80211_remain_on_channel(struct wiphy *wiphy,
+				       struct wireless_dev *wdev,
+				       struct ieee80211_channel *chan, unsigned int duration, u64 *cookie,
+				       const u8 *rx_addr);
+#else
 int mtk_p2p_cfg80211_remain_on_channel(struct wiphy *wiphy,
 				       struct wireless_dev *wdev,
 				       struct ieee80211_channel *chan, unsigned int duration, u64 *cookie);
+#endif
 
 int mtk_p2p_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy, struct wireless_dev *wdev, u64 cookie);
 

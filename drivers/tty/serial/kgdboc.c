@@ -188,11 +188,6 @@ static void cleanup_kgdboc(void)
 
 	kgdboc_unregister_kbd();
 	kgdb_unregister_io_module(&kgdboc_io_ops);
-
-	if (kgdb_tty_driver) {
-		tty_driver_kref_put(kgdb_tty_driver);
-		kgdb_tty_driver = NULL;
-	}
 }
 
 static int configure_kgdboc(void)
@@ -259,10 +254,6 @@ do_register:
 
 noconfig:
 	kgdboc_unregister_kbd();
-	if (kgdb_tty_driver) {
-		tty_driver_kref_put(kgdb_tty_driver);
-		kgdb_tty_driver = NULL;
-	}
 	configured = 0;
 
 	return err;
@@ -372,7 +363,7 @@ static int param_set_kgdboc_var(const char *kmessage,
 
 	mutex_lock(&config_mutex);
 
-	strscpy(config, kmessage);
+	strcpy(config, kmessage);
 	/* Chop out \n char as a result of echo */
 	if (len && config[len - 1] == '\n')
 		config[len - 1] = '\0';

@@ -23,7 +23,6 @@ struct parmarea parmarea __section(".parmarea") = {
 };
 
 char __bootdata(early_command_line)[COMMAND_LINE_SIZE];
-static char command_line_buf[COMMAND_LINE_SIZE];
 
 unsigned int __bootdata_preserved(zlib_dfltcc_support) = ZLIB_DFLTCC_FULL;
 struct ipl_parameter_block __bootdata_preserved(ipl_block);
@@ -136,29 +135,31 @@ out:
 
 static void append_ipl_block_parm(void)
 {
-	size_t len, extra = 0;
-	char *delim;
+	char *parm, *delim;
+	size_t len, rc = 0;
 
 	len = strlen(early_command_line);
-	delim = early_command_line + len; /* '\0' character position */
+
+	delim = early_command_line + len;    /* '\0' character position */
+	parm = early_command_line + len + 1; /* append right after '\0' */
 
 	switch (ipl_block.pb0_hdr.pbt) {
 	case IPL_PBT_CCW:
-		extra = ipl_block_get_ascii_vmparm(command_line_buf, sizeof(command_line_buf), &ipl_block);
+		rc = ipl_block_get_ascii_vmparm(
+			parm, COMMAND_LINE_SIZE - len - 1, &ipl_block);
 		break;
 	case IPL_PBT_FCP:
 	case IPL_PBT_NVME:
 	case IPL_PBT_ECKD:
-		extra = ipl_block_get_ascii_scpdata(command_line_buf, sizeof(command_line_buf), &ipl_block);
+		rc = ipl_block_get_ascii_scpdata(
+			parm, COMMAND_LINE_SIZE - len - 1, &ipl_block);
 		break;
 	}
-	if (extra) {
-		if (command_line_buf[0] == '=') {
-			memmove(early_command_line, command_line_buf + 1, extra);
-		} else if (len < COMMAND_LINE_SIZE - 2) {
+	if (rc) {
+		if (*parm == '=')
+			memmove(early_command_line, parm + 1, rc);
+		else
 			*delim = ' '; /* replace '\0' with space */
-			sized_strscpy(delim + 1, command_line_buf, COMMAND_LINE_SIZE - len - 1);
-		}
 	}
 }
 
@@ -230,7 +231,7 @@ static void modify_fac_list(char *str)
 			if (str == endp)
 				break;
 			str = endp;
-			while (val <= endval && val < MAX_FACILITY_BIT) {
+			while (val <= endval) {
 				modify_facility(val, clear);
 				val++;
 			}
@@ -244,6 +245,7 @@ static void modify_fac_list(char *str)
 	check_cleared_facilities();
 }
 
+static char command_line_buf[COMMAND_LINE_SIZE];
 void parse_boot_command_line(void)
 {
 	char *param, *val;

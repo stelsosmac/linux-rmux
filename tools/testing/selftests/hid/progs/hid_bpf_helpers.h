@@ -61,9 +61,6 @@ enum hid_report_type {
 
 struct hid_device {
 	unsigned int id;
-	char name[128];
-	char phys[64];
-	char uniq[64];
 } __attribute__((preserve_access_index));
 
 struct bpf_wq {

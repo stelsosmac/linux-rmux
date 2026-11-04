@@ -331,6 +331,7 @@ static void acm_process_notification(struct acm *acm, unsigned char *buf)
 
 		spin_lock_irqsave(&acm->read_lock, flags);
 		acm->ctrlin = newctrl;
+		acm->oldcount = acm->iocount;
 
 		if (difference & USB_CDC_SERIAL_STATE_DSR)
 			acm->iocount.dsr++;
@@ -787,9 +788,6 @@ static void acm_port_shutdown(struct tty_port *port)
 		usb_autopm_put_interface_async(acm->control);
 	}
 
-	if (acm->disconnected)
-		return;
-
 	acm_unpoison_urbs(acm);
 
 	if (acm->quirks & ALWAYS_POLL_CTRL) {
@@ -799,9 +797,6 @@ static void acm_port_shutdown(struct tty_port *port)
 				"ctrl polling restart failed after port close\n");
 		/* port_shutdown() cleared DTR/RTS; restore them */
 		acm_set_control(acm, USB_CDC_CTRL_DTR | USB_CDC_CTRL_RTS);
-		if (acm_submit_read_urbs(acm, GFP_KERNEL))
-			dev_dbg(&acm->control->dev,
-				"read urb restart failed after port close\n");
 	}
 }
 
@@ -1029,16 +1024,11 @@ static int wait_serial_change(struct acm *acm, unsigned long arg)
 	DECLARE_WAITQUEUE(wait, current);
 	struct async_icount old, new;
 
-	spin_lock_irq(&acm->read_lock);
-	old = acm->iocount;
-	spin_unlock_irq(&acm->read_lock);
-
-	add_wait_queue(&acm->wioctl, &wait);
-	for (;;) {
-		set_current_state(TASK_INTERRUPTIBLE);
-
+	do {
 		spin_lock_irq(&acm->read_lock);
+		old = acm->oldcount;
 		new = acm->iocount;
+		acm->oldcount = new;
 		spin_unlock_irq(&acm->read_lock);
 
 		if ((arg & TIOCM_DSR) &&
@@ -1051,20 +1041,22 @@ static int wait_serial_change(struct acm *acm, unsigned long arg)
 			old.rng != new.rng)
 			break;
 
-		if (acm->disconnected) {
-			rv = -ENODEV;
-			break;
-		}
-
+		add_wait_queue(&acm->wioctl, &wait);
+		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
-
-		if (signal_pending(current)) {
-			rv = -ERESTARTSYS;
-			break;
+		remove_wait_queue(&acm->wioctl, &wait);
+		if (acm->disconnected) {
+			if (arg & TIOCM_CD)
+				break;
+			else
+				rv = -ENODEV;
+		} else {
+			if (signal_pending(current))
+				rv = -ERESTARTSYS;
 		}
-	}
-	__set_current_state(TASK_RUNNING);
-	remove_wait_queue(&acm->wioctl, &wait);
+	} while (!rv);
+
+	
 
 	return rv;
 }
@@ -1572,9 +1564,6 @@ skip_countries:
 		if (usb_submit_urb(acm->ctrlurb, GFP_KERNEL))
 			dev_warn(&intf->dev,
 				 "failed to start persistent ctrl polling\n");
-		if (acm_submit_read_urbs(acm, GFP_KERNEL))
-			dev_warn(&intf->dev,
-				 "failed to start persistent bulk read polling\n");
 	}
 
 	return 0;
@@ -2145,7 +2134,7 @@ static int __init acm_init(void)
 {
 	int retval;
 	acm_tty_driver = tty_alloc_driver(ACM_TTY_MINORS, TTY_DRIVER_REAL_RAW |
-			TTY_DRIVER_DYNAMIC_DEV | TTY_DRIVER_RESET_SAVED_TERMIOS);
+			TTY_DRIVER_DYNAMIC_DEV);
 	if (IS_ERR(acm_tty_driver))
 		return PTR_ERR(acm_tty_driver);
 	acm_tty_driver->driver_name = "acm",

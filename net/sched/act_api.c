@@ -41,9 +41,11 @@ int tcf_dev_queue_xmit(struct sk_buff *skb, int (*xmit)(struct sk_buff *skb))
 }
 EXPORT_SYMBOL_GPL(tcf_dev_queue_xmit);
 
-static void tcf_action_goto_chain_exec(const struct tcf_chain *chain,
+static void tcf_action_goto_chain_exec(const struct tc_action *a,
 				       struct tcf_result *res)
 {
+	const struct tcf_chain *chain = rcu_dereference_bh(a->goto_chain);
+
 	res->goto_tp = rcu_dereference_bh(chain->filter_chain);
 }
 
@@ -372,10 +374,9 @@ static int __tcf_action_put(struct tc_action *p, bool bind)
 {
 	struct tcf_idrinfo *idrinfo = p->idrinfo;
 
-	mutex_lock(&idrinfo->lock);
-	if (bind)
-		atomic_dec(&p->tcfa_bindcnt);
-	if (refcount_dec_and_test(&p->tcfa_refcnt)) {
+	if (refcount_dec_and_mutex_lock(&p->tcfa_refcnt, &idrinfo->lock)) {
+		if (bind)
+			atomic_dec(&p->tcfa_bindcnt);
 		idr_remove(&idrinfo->action_idr, p->tcfa_index);
 		mutex_unlock(&idrinfo->lock);
 
@@ -383,7 +384,9 @@ static int __tcf_action_put(struct tc_action *p, bool bind)
 		return 1;
 	}
 
-	mutex_unlock(&idrinfo->lock);
+	if (bind)
+		atomic_dec(&p->tcfa_bindcnt);
+
 	return 0;
 }
 
@@ -442,28 +445,16 @@ static size_t tcf_action_shared_attrs_size(const struct tc_action *act)
 		+ nla_total_size(IFNAMSIZ) /* TCA_ACT_KIND */
 		+ cookie_len /* TCA_ACT_COOKIE */
 		+ nla_total_size(sizeof(struct nla_bitfield32)) /* TCA_ACT_HW_STATS */
-		/* TCA_ACT_USED_HW_STATS */
-		+ nla_total_size(sizeof(struct nla_bitfield32))
-		+ nla_total_size(sizeof(u32)) /* TCA_ACT_IN_HW_COUNT */
 		+ nla_total_size(0) /* TCA_ACT_STATS nested */
 		+ nla_total_size(sizeof(struct nla_bitfield32)) /* TCA_ACT_FLAGS */
 		/* TCA_STATS_BASIC */
 		+ nla_total_size_64bit(sizeof(struct gnet_stats_basic))
-		/* TCA_STATS_BASIC_HW */
-		+ nla_total_size_64bit(sizeof(struct gnet_stats_basic))
-		/* TCA_STATS_PKT64, emitted by both of the basic copies above */
-		+ 2 * nla_total_size_64bit(sizeof(u64))
-		/* TCA_STATS_RATE_EST */
-		+ nla_total_size_64bit(sizeof(struct gnet_stats_rate_est))
-		/* TCA_STATS_RATE_EST64 */
-		+ nla_total_size_64bit(sizeof(struct gnet_stats_rate_est64))
+		/* TCA_STATS_PKT64 */
+		+ nla_total_size_64bit(sizeof(u64))
 		/* TCA_STATS_QUEUE */
 		+ nla_total_size_64bit(sizeof(struct gnet_stats_queue))
 		+ nla_total_size(0) /* TCA_ACT_OPTIONS nested */
-		/* TCA_GACT_TM; actions dump their tcf_t with nla_put_64bit(),
-		 * which may emit an extra NLA_PAD attribute.
-		 */
-		+ nla_total_size_64bit(sizeof(struct tcf_t));
+		+ nla_total_size(sizeof(struct tcf_t)); /* TCA_GACT_TM */
 }
 
 static size_t tcf_action_full_attrs_size(size_t sz)
@@ -757,7 +748,7 @@ static int tcf_idr_delete_index(struct tcf_idrinfo *idrinfo, u32 index)
 
 	mutex_lock(&idrinfo->lock);
 	p = idr_find(&idrinfo->action_idr, index);
-	if (IS_ERR_OR_NULL(p)) {
+	if (!p) {
 		mutex_unlock(&idrinfo->lock);
 		return -ENOENT;
 	}
@@ -1179,14 +1170,12 @@ repeat:
 					return TC_ACT_OK;
 			}
 		} else if (TC_ACT_EXT_CMP(ret, TC_ACT_GOTO_CHAIN)) {
-			struct tcf_chain *chain = rcu_dereference_bh(a->goto_chain);
-
-			if (unlikely(!chain)) {
+			if (unlikely(!rcu_access_pointer(a->goto_chain))) {
 				tcf_set_drop_reason(skb,
 						    SKB_DROP_REASON_TC_CHAIN_NOTFOUND);
 				return TC_ACT_SHOT;
 			}
-			tcf_action_goto_chain_exec(chain, res);
+			tcf_action_goto_chain_exec(a, res);
 		}
 
 		if (ret != TC_ACT_PIPE)
@@ -1199,13 +1188,18 @@ EXPORT_SYMBOL(tcf_action_exec);
 
 int tcf_action_destroy(struct tc_action *actions[], int bind)
 {
+	const struct tc_action_ops *ops;
 	struct tc_action *a;
 	int ret = 0, i;
 
 	tcf_act_for_each_action(i, a, actions) {
 		actions[i] = NULL;
-		/* Drop our reference even if the action is still bound to a filter. */
-		ret = tcf_idr_release(a, bind);
+		ops = a->ops;
+		ret = __tcf_idr_release(a, bind, true);
+		if (ret == ACT_P_DELETED)
+			module_put(ops->owner);
+		else if (ret < 0)
+			return ret;
 	}
 	return ret;
 }
@@ -1217,16 +1211,11 @@ static int tcf_action_put(struct tc_action *p)
 
 static void tcf_action_put_many(struct tc_action *actions[])
 {
+	struct tc_action *a;
 	int i;
 
-	/* Deletion may have cleared entries before failing. */
-	for (i = 0; i < TCA_ACT_MAX_PRIO; i++) {
-		struct tc_action *a = actions[i];
-		const struct tc_action_ops *ops;
-
-		if (!a)
-			continue;
-		ops = a->ops;
+	tcf_act_for_each_action(i, a, actions) {
+		const struct tc_action_ops *ops = a->ops;
 		if (tcf_action_put(a))
 			module_put(ops->owner);
 	}
@@ -1589,7 +1578,7 @@ void tcf_action_update_stats(struct tc_action *a, u64 bytes, u64 packets,
 	if (a->cpu_bstats) {
 		_bstats_update(this_cpu_ptr(a->cpu_bstats), bytes, packets);
 
-		this_cpu_add(a->cpu_qstats->drops, drops);
+		this_cpu_ptr(a->cpu_qstats)->drops += drops;
 
 		if (hw)
 			_bstats_update(this_cpu_ptr(a->cpu_bstats_hw),
@@ -1696,12 +1685,12 @@ out_nlmsg_trim:
 
 static int
 tcf_get_notify(struct net *net, u32 portid, struct nlmsghdr *n,
-	       struct tc_action *actions[], size_t attr_size, int event,
+	       struct tc_action *actions[], int event,
 	       struct netlink_ext_ack *extack)
 {
 	struct sk_buff *skb;
 
-	skb = alloc_skb(max(attr_size, NLMSG_GOODSIZE), GFP_KERNEL);
+	skb = alloc_skb(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (!skb)
 		return -ENOBUFS;
 	if (tca_get_fill(skb, actions, portid, n->nlmsg_seq, 0, event,
@@ -1866,13 +1855,11 @@ static int tcf_action_delete(struct net *net, struct tc_action *actions[])
 static struct sk_buff *tcf_reoffload_del_notify_msg(struct net *net,
 						    struct tc_action *action)
 {
+	size_t attr_size = tcf_action_fill_size(action);
 	struct tc_action *actions[TCA_ACT_MAX_PRIO] = {
 		[0] = action,
 	};
 	struct sk_buff *skb;
-	size_t attr_size;
-
-	attr_size = tcf_action_full_attrs_size(tcf_action_fill_size(action));
 
 	skb = alloc_skb(max(attr_size, NLMSG_GOODSIZE), GFP_KERNEL);
 	if (!skb)
@@ -1889,18 +1876,15 @@ static struct sk_buff *tcf_reoffload_del_notify_msg(struct net *net,
 static int tcf_reoffload_del_notify(struct net *net, struct tc_action *action)
 {
 	const struct tc_action_ops *ops = action->ops;
-	struct sk_buff *skb = NULL;
+	struct sk_buff *skb;
 	int ret;
 
-	if (rtnl_notify_needed(net, 0, RTNLGRP_TC)) {
+	if (!rtnl_notify_needed(net, 0, RTNLGRP_TC)) {
+		skb = NULL;
+	} else {
 		skb = tcf_reoffload_del_notify_msg(net, action);
-		/* The action has already lost its hardware instance and is
-		 * skip_sw, so it must be released whether or not the
-		 * notification can be built.  Drop the notification rather
-		 * than leave an action behind that processes no packets.
-		 */
 		if (IS_ERR(skb))
-			skb = NULL;
+			return PTR_ERR(skb);
 	}
 
 	ret = tcf_idr_release_unsafe(action);
@@ -2057,8 +2041,7 @@ tca_action_gd(struct net *net, struct nlattr *nla, struct nlmsghdr *n,
 	attr_size = tcf_action_full_attrs_size(attr_size);
 
 	if (event == RTM_GETACTION)
-		ret = tcf_get_notify(net, portid, n, actions, attr_size, event,
-				     extack);
+		ret = tcf_get_notify(net, portid, n, actions, event, extack);
 	else { /* delete */
 		ret = tcf_del_notify(net, n, actions, portid, attr_size, extack);
 		if (ret)

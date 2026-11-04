@@ -305,7 +305,8 @@ static void emit_bswap_r64(struct jit_context *ctx, u8 dst, u32 width)
 	case 16:
 		emit_sext(ctx, dst, dst);
 		emit_bswap_r(ctx, dst, width);
-		emit_zext(ctx, dst);
+		if (cpu_has_mips64r2 || cpu_has_mips64r6)
+			emit_zext(ctx, dst);
 		break;
 	}
 	clobber_reg(ctx, dst);

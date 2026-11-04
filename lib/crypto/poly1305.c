@@ -78,7 +78,7 @@ void poly1305_final(struct poly1305_desc_ctx *desc, u8 *dst)
 	}
 
 	poly1305_emit(&desc->state.h, dst, desc->s);
-	memzero_explicit(desc, sizeof(*desc));
+	*desc = (struct poly1305_desc_ctx){};
 }
 EXPORT_SYMBOL(poly1305_final);
 

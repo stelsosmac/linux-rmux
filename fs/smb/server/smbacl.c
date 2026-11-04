@@ -27,9 +27,6 @@ static const struct smb_sid creator_owner = {
 /* security id for everyone/world system group */
 static const struct smb_sid creator_group = {
 	1, 1, {0, 0, 0, 0, 0, 3}, {cpu_to_le32(1)} };
-/* security id for owner rights */
-static const struct smb_sid sid_owner_rights = {
-	1, 1, {0, 0, 0, 0, 0, 3}, {cpu_to_le32(4)} };
 
 /* security id for everyone/world system group */
 static const struct smb_sid sid_everyone = {
@@ -261,7 +258,6 @@ static int sid_to_id(struct mnt_idmap *idmap,
 		     struct smb_sid *psid, uint sidtype,
 		     struct smb_fattr *fattr)
 {
-	const struct smb_sid *sid_prefix;
 	int rc = -EINVAL;
 
 	/*
@@ -283,12 +279,6 @@ static int sid_to_id(struct mnt_idmap *idmap,
 		kuid_t uid;
 		uid_t id;
 
-		/* Only the server domain RID has a local uid representation. */
-		sid_prefix = &server_conf.domain_sid;
-		if (psid->num_subauth != sid_prefix->num_subauth + 1 ||
-		    compare_sids(psid, sid_prefix))
-			return -EINVAL;
-
 		id = le32_to_cpu(psid->sub_auth[psid->num_subauth - 1]);
 		uid = KUIDT_INIT(id);
 		uid = from_vfsuid(idmap, &init_user_ns, VFSUIDT_INIT(uid));
@@ -299,12 +289,6 @@ static int sid_to_id(struct mnt_idmap *idmap,
 	} else {
 		kgid_t gid;
 		gid_t id;
-
-		/* Local gids are represented by S-1-22-2-<gid>. */
-		sid_prefix = &sid_unix_groups;
-		if (psid->num_subauth != sid_prefix->num_subauth + 1 ||
-		    compare_sids(psid, sid_prefix))
-			return -EINVAL;
 
 		id = le32_to_cpu(psid->sub_auth[psid->num_subauth - 1]);
 		gid = KGIDT_INIT(id);
@@ -383,10 +367,10 @@ void free_acl_state(struct posix_acl_state *state)
 	kfree(state->groups);
 }
 
-static int parse_dacl(struct mnt_idmap *idmap,
-		      struct smb_acl *pdacl, char *end_of_acl,
-		      struct smb_sid *pownersid, struct smb_sid *pgrpsid,
-		      struct smb_fattr *fattr)
+static void parse_dacl(struct mnt_idmap *idmap,
+		       struct smb_acl *pdacl, char *end_of_acl,
+		       struct smb_sid *pownersid, struct smb_sid *pgrpsid,
+		       struct smb_fattr *fattr)
 {
 	int i, ret;
 	u16 num_aces = 0;
@@ -400,13 +384,13 @@ static int parse_dacl(struct mnt_idmap *idmap,
 	bool owner_found = false, group_found = false, others_found = false;
 
 	if (!pdacl)
-		return 0;
+		return;
 
 	/* validate that we do not go past end of acl */
 	if (end_of_acl < (char *)pdacl + sizeof(struct smb_acl) ||
 	    end_of_acl < (char *)pdacl + le16_to_cpu(pdacl->size)) {
 		pr_err("ACL too small to parse DACL\n");
-		return -EINVAL;
+		return;
 	}
 
 	ksmbd_debug(SMB, "DACL revision %d size %d num aces %d\n",
@@ -418,31 +402,31 @@ static int parse_dacl(struct mnt_idmap *idmap,
 
 	num_aces = le16_to_cpu(pdacl->num_aces);
 	if (num_aces <= 0)
-		return 0;
+		return;
 
 	dacl_size = le16_to_cpu(pdacl->size);
 	if (dacl_size < sizeof(struct smb_acl))
-		return -EINVAL;
+		return;
 
 	if (num_aces > (dacl_size - sizeof(struct smb_acl)) /
 			(offsetof(struct smb_ace, sid) +
 			 offsetof(struct smb_sid, sub_auth) + sizeof(__le16)))
-		return -EINVAL;
+		return;
 
 	ret = init_acl_state(&acl_state, num_aces);
 	if (ret)
-		return ret;
+		return;
 	ret = init_acl_state(&default_acl_state, num_aces);
 	if (ret) {
 		free_acl_state(&acl_state);
-		return ret;
+		return;
 	}
 
 	ppace = kmalloc_objs(struct smb_ace *, num_aces, KSMBD_DEFAULT_GFP);
 	if (!ppace) {
 		free_acl_state(&default_acl_state);
 		free_acl_state(&acl_state);
-		return -ENOMEM;
+		return;
 	}
 
 	/*
@@ -451,10 +435,8 @@ static int parse_dacl(struct mnt_idmap *idmap,
 	 * user/group/other have no permissions
 	 */
 	for (i = 0; i < num_aces; ++i) {
-		if (end_of_acl - acl_base < acl_size) {
-			ret = -EINVAL;
-			goto out;
-		}
+		if (end_of_acl - acl_base < acl_size)
+			break;
 
 		ppace[i] = (struct smb_ace *)(acl_base + acl_size);
 		acl_base = (char *)ppace[i];
@@ -467,10 +449,8 @@ static int parse_dacl(struct mnt_idmap *idmap,
 		    (end_of_acl - acl_base <
 		     acl_size + sizeof(__le32) * ppace[i]->sid.num_subauth) ||
 		    (le16_to_cpu(ppace[i]->size) <
-		     acl_size + sizeof(__le32) * ppace[i]->sid.num_subauth)) {
-			ret = -EINVAL;
-			goto out;
-		}
+		     acl_size + sizeof(__le32) * ppace[i]->sid.num_subauth))
+			break;
 
 		acl_size = le16_to_cpu(ppace[i]->size);
 		ppace[i]->access_req =
@@ -528,8 +508,8 @@ static int parse_dacl(struct mnt_idmap *idmap,
 			temp_fattr.cf_uid = INVALID_UID;
 			ret = sid_to_id(idmap, &ppace[i]->sid, SIDOWNER, &temp_fattr);
 			if (ret || uid_eq(temp_fattr.cf_uid, INVALID_UID)) {
-				pr_err_ratelimited("%s: Error %d mapping Owner SID to uid\n",
-						   __func__, ret);
+				pr_err("%s: Error %d mapping Owner SID to uid\n",
+				       __func__, ret);
 				continue;
 			}
 
@@ -545,6 +525,7 @@ static int parse_dacl(struct mnt_idmap *idmap,
 				((acl_mode & 0700) >> 6) | 0004;
 		}
 	}
+	kfree(ppace);
 
 	if (owner_found) {
 		/* The owner must be set to at least read-only. */
@@ -587,12 +568,10 @@ static int parse_dacl(struct mnt_idmap *idmap,
 			fattr->cf_acls =
 				posix_acl_alloc(acl_state.users->n +
 					acl_state.groups->n + 4, KSMBD_DEFAULT_GFP);
-			if (!fattr->cf_acls) {
-				ret = -ENOMEM;
-				goto out;
+			if (fattr->cf_acls) {
+				cf_pace = fattr->cf_acls->a_entries;
+				posix_state_to_acl(&acl_state, cf_pace);
 			}
-			cf_pace = fattr->cf_acls->a_entries;
-			posix_state_to_acl(&acl_state, cf_pace);
 		}
 	}
 
@@ -603,20 +582,14 @@ static int parse_dacl(struct mnt_idmap *idmap,
 			fattr->cf_dacls =
 				posix_acl_alloc(default_acl_state.users->n +
 				default_acl_state.groups->n + 4, KSMBD_DEFAULT_GFP);
-			if (!fattr->cf_dacls) {
-				ret = -ENOMEM;
-				goto out;
+			if (fattr->cf_dacls) {
+				cf_pdace = fattr->cf_dacls->a_entries;
+				posix_state_to_acl(&default_acl_state, cf_pdace);
 			}
-			cf_pdace = fattr->cf_dacls->a_entries;
-			posix_state_to_acl(&default_acl_state, cf_pdace);
 		}
 	}
-	ret = 0;
-out:
-	kfree(ppace);
 	free_acl_state(&acl_state);
 	free_acl_state(&default_acl_state);
-	return ret;
 }
 
 static void set_posix_acl_entries_dacl(struct mnt_idmap *idmap,
@@ -943,9 +916,9 @@ int parse_sec_desc(struct mnt_idmap *idmap, struct smb_ntsd *pntsd,
 
 		rc = sid_to_id(idmap, owner_sid_ptr, SIDOWNER, fattr);
 		if (rc) {
-			ksmbd_debug(SMB, "Owner SID has no Unix uid mapping\n");
+			pr_err("%s: Error %d mapping Owner SID to uid\n",
+			       __func__, rc);
 			owner_sid_ptr = NULL;
-			rc = 0;
 		}
 	}
 
@@ -961,9 +934,9 @@ int parse_sec_desc(struct mnt_idmap *idmap, struct smb_ntsd *pntsd,
 		}
 		rc = sid_to_id(idmap, group_sid_ptr, SIDUNIX_GROUP, fattr);
 		if (rc) {
-			ksmbd_debug(SMB, "Group SID has no Unix gid mapping\n");
+			pr_err("%s: Error %d mapping Group SID to gid\n",
+			       __func__, rc);
 			group_sid_ptr = NULL;
-			rc = 0;
 		}
 	}
 
@@ -977,10 +950,8 @@ int parse_sec_desc(struct mnt_idmap *idmap, struct smb_ntsd *pntsd,
 		if (dacloffset < sizeof(struct smb_ntsd))
 			return -EINVAL;
 
-		rc = parse_dacl(idmap, dacl_ptr, end_of_acl,
-				owner_sid_ptr, group_sid_ptr, fattr);
-		if (rc)
-			return rc;
+		parse_dacl(idmap, dacl_ptr, end_of_acl,
+			   owner_sid_ptr, group_sid_ptr, fattr);
 	}
 
 	return 0;
@@ -1448,8 +1419,7 @@ bool smb_inherit_flags(int flags, bool is_dir)
 }
 
 int smb_check_perm_dacl(struct ksmbd_conn *conn, const struct path *path,
-			__le32 *pdaccess, __le32 raw_daccess, int uid,
-			bool strict)
+			__le32 *pdaccess, int uid)
 {
 	struct mnt_idmap *idmap = mnt_idmap(path->mnt);
 	struct smb_ntsd *pntsd = NULL;
@@ -1459,17 +1429,14 @@ int smb_check_perm_dacl(struct ksmbd_conn *conn, const struct path *path,
 	unsigned int dacl_offset;
 	size_t dacl_struct_end;
 	struct smb_sid sid;
-	int requested = le32_to_cpu(*pdaccess & ~FILE_MAXIMAL_ACCESS_LE);
-	int granted = requested;
+	int granted = le32_to_cpu(*pdaccess & ~FILE_MAXIMAL_ACCESS_LE);
 	struct smb_ace *ace;
 	int i, found = 0;
-	unsigned int access_bits = 0, denied = 0;
+	unsigned int access_bits = 0;
 	struct smb_ace *others_ace = NULL;
 	struct posix_acl_entry *pa_entry;
 	unsigned int sid_type = SIDOWNER;
 	unsigned short ace_size;
-	bool is_owner, owner_rights = false;
-	vfsuid_t vfsuid;
 
 	ksmbd_debug(SMB, "check permission using windows acl\n");
 	pntsd_size = ksmbd_vfs_get_sd_xattr(conn, idmap,
@@ -1499,15 +1466,12 @@ int smb_check_perm_dacl(struct ksmbd_conn *conn, const struct path *path,
 		goto err_out;
 	}
 
-	if (!uid)
-		sid_type = SIDUNIX_USER;
-	id_to_sid(uid, sid_type, &sid);
-	vfsuid = i_uid_into_vfsuid(idmap, d_inode(path->dentry));
-	is_owner = uid == from_kuid(&init_user_ns, vfsuid_into_kuid(vfsuid));
-
 	if (*pdaccess & FILE_MAXIMAL_ACCESS_LE) {
+		granted = READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES |
+			DELETE;
+
 		ace = (struct smb_ace *)((char *)pdacl + sizeof(struct smb_acl));
-		aces_size = pdacl_size - sizeof(struct smb_acl);
+		aces_size = acl_size - sizeof(struct smb_acl);
 		for (i = 0; i < le16_to_cpu(pdacl->num_aces); i++) {
 			if (aces_size < offsetof(struct smb_ace, sid) +
 			    CIFS_SID_BASE_SIZE)
@@ -1518,53 +1482,17 @@ int smb_check_perm_dacl(struct ksmbd_conn *conn, const struct path *path,
 				       CIFS_SID_BASE_SIZE)
 				break;
 			aces_size -= ace_size;
-
-			if (ace->sid.num_subauth > SID_MAX_SUB_AUTHORITIES ||
-			    ace_size < offsetof(struct smb_ace, sid) +
-				      CIFS_SID_BASE_SIZE +
-				      sizeof(__le32) * ace->sid.num_subauth)
-				break;
-
-			if (!compare_sids(&sid_owner_rights, &ace->sid)) {
-				owner_rights = true;
-				if (!is_owner)
-					goto next_ace;
-			}
-
-			if (ace->flags & INHERIT_ONLY_ACE ||
-			    (compare_sids(&sid, &ace->sid) &&
-			     compare_sids(&sid_unix_NFS_mode, &ace->sid) &&
-			     compare_sids(&sid_everyone, &ace->sid) &&
-			     compare_sids(&sid_authusers, &ace->sid) &&
-			     compare_sids(&sid_owner_rights, &ace->sid)))
-				goto next_ace;
-
-			switch (ace->type) {
-			case ACCESS_ALLOWED_ACE_TYPE:
-				access_bits |= le32_to_cpu(ace->access_req);
-				break;
-			case ACCESS_DENIED_ACE_TYPE:
-			case ACCESS_DENIED_CALLBACK_ACE_TYPE:
-				denied |= ~access_bits &
-					le32_to_cpu(ace->access_req);
-				break;
-			}
-next_ace:
+			granted |= le32_to_cpu(ace->access_req);
 			ace = (struct smb_ace *)((char *)ace + le16_to_cpu(ace->size));
 		}
-		if (is_owner && !owner_rights)
-			access_bits |= READ_CONTROL | WRITE_DAC |
-				FILE_READ_ATTRIBUTES | DELETE;
-		access_bits &= ~denied;
-		if ((raw_daccess & FILE_GENERIC_EXECUTE_LE) &&
-		    S_ISREG(d_inode(path->dentry)->i_mode) &&
-		    (access_bits & GENERIC_READ_FLAGS) == GENERIC_READ_FLAGS)
-			access_bits |= FILE_EXECUTE;
-		granted = requested | access_bits;
 	}
 
+	if (!uid)
+		sid_type = SIDUNIX_USER;
+	id_to_sid(uid, sid_type, &sid);
+
 	ace = (struct smb_ace *)((char *)pdacl + sizeof(struct smb_acl));
-	aces_size = pdacl_size - sizeof(struct smb_acl);
+	aces_size = acl_size - sizeof(struct smb_acl);
 	for (i = 0; i < le16_to_cpu(pdacl->num_aces); i++) {
 		if (aces_size < offsetof(struct smb_ace, sid) +
 		    CIFS_SID_BASE_SIZE)
@@ -1586,16 +1514,25 @@ next_ace:
 			found = 1;
 			break;
 		}
-		if (!compare_sids(&sid_everyone, &ace->sid) ||
-		    !compare_sids(&sid_authusers, &ace->sid))
+		if (!compare_sids(&sid_everyone, &ace->sid))
 			others_ace = ace;
 
 		ace = (struct smb_ace *)((char *)ace + le16_to_cpu(ace->size));
 	}
 
+	if (*pdaccess & FILE_MAXIMAL_ACCESS_LE && found) {
+		granted = READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES |
+			DELETE;
+
+		granted |= le32_to_cpu(ace->access_req);
+
+		if (!pdacl->num_aces)
+			granted = GENERIC_ALL_FLAGS;
+	}
+
 	if (IS_ENABLED(CONFIG_FS_POSIX_ACL)) {
 		posix_acls = get_inode_acl(d_inode(path->dentry), ACL_TYPE_ACCESS);
-		if (!IS_ERR_OR_NULL(posix_acls) && !found && !others_ace) {
+		if (!IS_ERR_OR_NULL(posix_acls) && !found) {
 			unsigned int id = -1;
 
 			pa_entry = posix_acls->a_entries;
@@ -1633,27 +1570,19 @@ next_ace:
 		}
 	}
 
-	if (!(*pdaccess & FILE_MAXIMAL_ACCESS_LE)) {
-		switch (ace->type) {
-		case ACCESS_ALLOWED_ACE_TYPE:
-			access_bits = le32_to_cpu(ace->access_req);
-			break;
-		case ACCESS_DENIED_ACE_TYPE:
-		case ACCESS_DENIED_CALLBACK_ACE_TYPE:
-			access_bits = le32_to_cpu(~ace->access_req);
-			break;
-		}
+	switch (ace->type) {
+	case ACCESS_ALLOWED_ACE_TYPE:
+		access_bits = le32_to_cpu(ace->access_req);
+		break;
+	case ACCESS_DENIED_ACE_TYPE:
+	case ACCESS_DENIED_CALLBACK_ACE_TYPE:
+		access_bits = le32_to_cpu(~ace->access_req);
+		break;
 	}
 
 check_access_bits:
-	if (strict) {
-		access_bits &= granted;
-	} else {
-		access_bits |= FILE_READ_ATTRIBUTES | READ_CONTROL |
-			WRITE_DAC | DELETE;
-	}
-
-	if (granted & ~access_bits) {
+	if (granted &
+	    ~(access_bits | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | DELETE)) {
 		ksmbd_debug(SMB, "Access denied with winACL, granted : %x, access_req : %x\n",
 			    granted, le32_to_cpu(ace->access_req));
 		rc = -EACCES;

@@ -27,27 +27,24 @@ TRACE_EVENT(icmp_send,
 
 		TP_fast_assign(
 			struct iphdr *iph = ip_hdr(skb);
-			struct udphdr _uh, *uh = NULL;
+			struct udphdr *uh = udp_hdr(skb);
+			int proto_4 = iph->protocol;
 			__be32 *p32;
 
 			__entry->skbaddr = skb;
 			__entry->type = type;
 			__entry->code = code;
 
-			if (iph->protocol == IPPROTO_UDP)
-				uh = skb_header_pointer(skb,
-							skb_network_offset(skb) +
-							(iph->ihl << 2),
-							sizeof(_uh), &_uh);
-
-			if (!uh) {
+			if (proto_4 != IPPROTO_UDP || (u8 *)uh < skb->head ||
+				(u8 *)uh + sizeof(struct udphdr)
+				> skb_tail_pointer(skb)) {
 				__entry->sport = 0;
 				__entry->dport = 0;
 				__entry->ulen = 0;
 			} else {
 				__entry->sport = ntohs(uh->source);
 				__entry->dport = ntohs(uh->dest);
-				__entry->ulen = udp_get_len_short(uh);
+				__entry->ulen = ntohs(uh->len);
 			}
 
 			p32 = (__be32 *) __entry->saddr;

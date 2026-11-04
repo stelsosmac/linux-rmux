@@ -243,14 +243,10 @@ static int key_or_keyring_common(struct key *dest_keyring,
 			if (IS_ERR(key))
 				key = NULL;
 		} else if (trusted->type == &key_type_asymmetric) {
-			const struct asymmetric_key_ids *kids;
 			const struct asymmetric_key_id **signer_ids;
 
-			kids = asymmetric_key_ids(trusted);
-			if (!kids)
-				return -ENOKEY;
-
-			signer_ids = (const struct asymmetric_key_id **)kids->id;
+			signer_ids = (const struct asymmetric_key_id **)
+				asymmetric_key_ids(trusted)->id;
 
 			/*
 			 * The auth_ids come from the candidate key (the

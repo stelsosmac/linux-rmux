@@ -3238,10 +3238,7 @@ _base_assign_reply_queues(struct MPT3SAS_ADAPTER *ioc)
 		 * corresponding to high iops queues.
 		 */
 		if (ioc->high_iops_queues) {
-			int node = dev_to_node(&ioc->pdev->dev);
-
-			mask = (node == NUMA_NO_NODE) ?
-				cpu_online_mask : cpumask_of_node(node);
+			mask = cpumask_of_node(dev_to_node(&ioc->pdev->dev));
 			for (index = 0; index < ioc->high_iops_queues;
 			    index++) {
 				irq = pci_irq_vector(ioc->pdev, index);
@@ -5873,8 +5870,6 @@ _base_release_memory_pools(struct MPT3SAS_ADAPTER *ioc)
 
 	if (ioc->pcie_sgl_dma_pool) {
 		for (i = 0; i < ioc->scsiio_depth; i++) {
-			if (!ioc->pcie_sg_lookup[i].pcie_sgl)
-				continue;
 			dma_pool_free(ioc->pcie_sgl_dma_pool,
 					ioc->pcie_sg_lookup[i].pcie_sgl,
 					ioc->pcie_sg_lookup[i].pcie_sgl_dma);
@@ -8374,7 +8369,11 @@ _base_make_ioc_operational(struct MPT3SAS_ADAPTER *ioc)
 		return r; /* scan_start and scan_finished support */
 	}
 
-	return _base_send_port_enable(ioc);
+	r = _base_send_port_enable(ioc);
+	if (r)
+		return r;
+
+	return r;
 }
 
 /**

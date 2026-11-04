@@ -182,7 +182,8 @@ long diag324_pibbuf(unsigned long arg)
 		goto out;
 	rc = copy_to_user((void __user *)address, data->pib, data->pib->len);
 	rc |= put_user(data->sequence, &udata->sequence);
-	rc = rc ? -EFAULT : data->rc;
+	if (rc)
+		rc = -EFAULT;
 out:
 	mutex_unlock(&pibmutex);
 	return rc;

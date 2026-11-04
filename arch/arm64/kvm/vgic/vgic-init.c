@@ -97,9 +97,6 @@ int kvm_vgic_create(struct kvm *kvm, u32 type)
 	/*
 	 *  - Acquiring the vCPU mutex for every *online* vCPU to prevent
 	 *    concurrent vCPU ioctls for vCPUs already visible to userspace.
-	 *    This also ensures KVM isn't in the middle of creating a vCPU,
-	 *    i.e. that there are no vCPUs that have been created but aren't
-	 *    yet fully online.
 	 */
 	ret = -EBUSY;
 	if (kvm_trylock_all_vcpus(kvm))
@@ -108,11 +105,18 @@ int kvm_vgic_create(struct kvm *kvm, u32 type)
 	/*
 	 *  - Taking the config_lock which protects VGIC data structures such
 	 *    as the per-vCPU arrays of private IRQs (SGIs, PPIs).
+	 */
+	mutex_lock(&kvm->arch.config_lock);
+
+	/*
+	 * - Bailing on the entire thing if a vCPU is in the middle of creation,
+	 *   dropped the kvm->lock, but hasn't reached kvm_arch_vcpu_create().
 	 *
 	 * The whole combination of this guarantees that no vCPU can get into
 	 * KVM with a VGIC configuration inconsistent with the VM's VGIC.
 	 */
-	mutex_lock(&kvm->arch.config_lock);
+	if (kvm->created_vcpus != atomic_read(&kvm->online_vcpus))
+		goto out_unlock;
 
 	if (irqchip_in_kernel(kvm)) {
 		ret = -EEXIST;
@@ -172,7 +176,6 @@ int kvm_vgic_create(struct kvm *kvm, u32 type)
 		}
 
 		kvm->arch.vgic.vgic_model = 0;
-		kvm->arch.vgic.in_kernel = false;
 		goto out_unlock;
 	}
 
@@ -206,9 +209,6 @@ static int kvm_vgic_dist_init(struct kvm *kvm, unsigned int nr_spis)
 	struct vgic_dist *dist = &kvm->arch.vgic;
 	struct kvm_vcpu *vcpu0 = kvm_get_vcpu(kvm, 0);
 	int i;
-
-	if (dist->spis)
-		return 0;
 
 	dist->active_spis = (atomic_t)ATOMIC_INIT(0);
 	dist->spis = kzalloc_objs(struct vgic_irq, nr_spis, GFP_KERNEL_ACCOUNT);
@@ -271,12 +271,18 @@ int kvm_vgic_vcpu_nv_init(struct kvm_vcpu *vcpu)
 	return ret;
 }
 
-static void vgic_setup_private_irq(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
-				   u32 type)
+static void vgic_allocate_private_irq(struct kvm_vcpu *vcpu, int i, u32 type)
 {
-	irq->intid = irq - &vcpu->arch.vgic_cpu.private_irqs[0];
+	struct vgic_irq *irq = &vcpu->arch.vgic_cpu.private_irqs[i];
 
-	if (vgic_irq_is_sgi(irq->intid)) {
+	INIT_LIST_HEAD(&irq->ap_list);
+	raw_spin_lock_init(&irq->irq_lock);
+	irq->vcpu = NULL;
+	irq->target_vcpu = vcpu;
+	refcount_set(&irq->refcount, 0);
+
+	irq->intid = i;
+	if (vgic_irq_is_sgi(i)) {
 		/* SGIs */
 		irq->enabled = 1;
 		irq->config = VGIC_CONFIG_EDGE;
@@ -297,11 +303,18 @@ static void vgic_setup_private_irq(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
 	}
 }
 
-static void vgic_v5_setup_private_irq(struct kvm_vcpu *vcpu, struct vgic_irq *irq)
+static void vgic_v5_allocate_private_irq(struct kvm_vcpu *vcpu, int i, u32 type)
 {
-	int i = irq - &vcpu->arch.vgic_cpu.private_irqs[0];
+	struct vgic_irq *irq = &vcpu->arch.vgic_cpu.private_irqs[i];
+	u32 intid = vgic_v5_make_ppi(i);
 
-	irq->intid = vgic_v5_make_ppi(i);
+	INIT_LIST_HEAD(&irq->ap_list);
+	raw_spin_lock_init(&irq->irq_lock);
+	irq->vcpu = NULL;
+	irq->target_vcpu = vcpu;
+	refcount_set(&irq->refcount, 0);
+
+	irq->intid = intid;
 
 	/* The only Edge architected PPI is the SW_PPI */
 	if (i == GICV5_ARCH_PPI_SW_PPI)
@@ -310,7 +323,7 @@ static void vgic_v5_setup_private_irq(struct kvm_vcpu *vcpu, struct vgic_irq *ir
 		irq->config = VGIC_CONFIG_LEVEL;
 
 	/* Register the GICv5-specific PPI ops */
-	vgic_v5_set_ppi_ops(vcpu, irq->intid);
+	vgic_v5_set_ppi_ops(vcpu, intid);
 }
 
 static int vgic_allocate_private_irqs_locked(struct kvm_vcpu *vcpu, u32 type)
@@ -336,19 +349,15 @@ static int vgic_allocate_private_irqs_locked(struct kvm_vcpu *vcpu, u32 type)
 	if (!vgic_cpu->private_irqs)
 		return -ENOMEM;
 
+	/*
+	 * Enable and configure all SGIs to be edge-triggered and
+	 * configure all PPIs as level-triggered.
+	 */
 	for (i = 0; i < num_private_irqs; i++) {
-		struct vgic_irq *irq = &vcpu->arch.vgic_cpu.private_irqs[i];
-
-		INIT_LIST_HEAD(&irq->ap_list);
-		raw_spin_lock_init(&irq->irq_lock);
-		irq->vcpu = NULL;
-		irq->target_vcpu = vcpu;
-		refcount_set(&irq->refcount, 0);
-
 		if (vgic_is_v5(vcpu->kvm))
-			vgic_v5_setup_private_irq(vcpu, irq);
+			vgic_v5_allocate_private_irq(vcpu, i, type);
 		else
-			vgic_setup_private_irq(vcpu, irq, type);
+			vgic_allocate_private_irq(vcpu, i, type);
 	}
 
 	return 0;
@@ -787,8 +796,7 @@ int kvm_vgic_hyp_init(void)
 
 	if (has_mask && !gic_kvm_info->maint_irq) {
 		kvm_err("No vgic maintenance irq\n");
-		ret = -ENXIO;
-		goto out_free;
+		return -ENXIO;
 	}
 
 	/*
@@ -821,7 +829,6 @@ int kvm_vgic_hyp_init(void)
 
 	kvm_vgic_global_state.maint_irq = gic_kvm_info->maint_irq;
 
-out_free:
 	kfree(gic_kvm_info);
 	gic_kvm_info = NULL;
 

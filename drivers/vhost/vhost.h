@@ -29,7 +29,6 @@ struct vhost_work {
 
 struct vhost_worker;
 struct vhost_dev;
-struct vhost_msg_node;
 
 struct vhost_worker_ops {
 	int (*create)(struct vhost_worker *worker, struct vhost_dev *dev,
@@ -45,7 +44,7 @@ struct vhost_worker {
 	/* Used to serialize device wide flushing with worker swapping. */
 	struct mutex		mutex;
 	struct llist_head	work_list;
-	struct kcov_common_handle_id kcov_handle;
+	u64			kcov_handle;
 	u32			id;
 	int			attachment_cnt;
 	bool			killed;
@@ -149,8 +148,6 @@ struct vhost_virtqueue {
 	/* Protected by virtqueue mutex. */
 	struct vhost_iotlb *umem;
 	struct vhost_iotlb *iotlb;
-	/* Protected by dev->iotlb_lock. */
-	struct vhost_msg_node *iotlb_miss;
 	void *private_data;
 	VIRTIO_DECLARE_FEATURES(acked_features);
 	u64 acked_backend_features;
@@ -280,7 +277,6 @@ ssize_t vhost_chr_read_iter(struct vhost_dev *dev, struct iov_iter *to,
 			    int noblock);
 ssize_t vhost_chr_write_iter(struct vhost_dev *dev,
 			     struct iov_iter *from);
-void vhost_clear_device_iotlb(struct vhost_dev *d);
 int vhost_init_device_iotlb(struct vhost_dev *d);
 
 void vhost_iotlb_map_free(struct vhost_iotlb *iotlb,

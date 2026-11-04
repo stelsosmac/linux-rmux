@@ -134,14 +134,10 @@ static bool evaluate_boot_verified(const struct ipe_eval_ctx *const ctx)
 static bool evaluate_dmv_roothash(const struct ipe_eval_ctx *const ctx,
 				  struct ipe_prop *p)
 {
-	const struct digest_info *root_hash;
-
-	if (!ctx->ipe_bdev)
-		return false;
-
-	root_hash = rcu_dereference(ctx->ipe_bdev->root_hash);
-
-	return root_hash && ipe_digest_eval(p->value, root_hash);
+	return !!ctx->ipe_bdev &&
+	       !!ctx->ipe_bdev->root_hash &&
+	       ipe_digest_eval(p->value,
+			       ctx->ipe_bdev->root_hash);
 }
 #else
 static bool evaluate_dmv_roothash(const struct ipe_eval_ctx *const ctx,

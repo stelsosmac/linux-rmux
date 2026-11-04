@@ -359,7 +359,7 @@ hid_bpf_release_context(struct hid_bpf_ctx *ctx)
 
 static int
 __hid_bpf_hw_check_params(struct hid_bpf_ctx *ctx, __u8 *buf, size_t *buf__sz,
-			  enum hid_report_type rtype, bool hw_request)
+			  enum hid_report_type rtype)
 {
 	struct hid_report_enum *report_enum;
 	struct hid_report *report;
@@ -387,10 +387,6 @@ __hid_bpf_hw_check_params(struct hid_bpf_ctx *ctx, __u8 *buf, size_t *buf__sz,
 		return -EINVAL;
 
 	report_len = hid_report_len(report);
-
-	/* unnumbered reports need to have a report ID reserved in the first byte */
-	if (hw_request && report_enum->numbered == 0)
-		report_len += 1;
 
 	if (*buf__sz > report_len)
 		*buf__sz = report_len;
@@ -424,7 +420,7 @@ hid_bpf_hw_request(struct hid_bpf_ctx *ctx, __u8 *buf, size_t buf__sz,
 		return -EDEADLOCK;
 
 	/* check arguments */
-	ret = __hid_bpf_hw_check_params(ctx, buf, &size, rtype, true);
+	ret = __hid_bpf_hw_check_params(ctx, buf, &size, rtype);
 	if (ret)
 		return ret;
 
@@ -453,7 +449,7 @@ hid_bpf_hw_request(struct hid_bpf_ctx *ctx, __u8 *buf, size_t buf__sz,
 					      (u64)(long)ctx,
 					      true); /* prevent infinite recursions */
 
-	if (ret > (ssize_t)size)
+	if (ret > size)
 		ret = size;
 	if (ret > 0)
 		memcpy(buf, dma_data, ret);
@@ -484,7 +480,7 @@ hid_bpf_hw_output_report(struct hid_bpf_ctx *ctx, __u8 *buf, size_t buf__sz)
 		return -EDEADLOCK;
 
 	/* check arguments */
-	ret = __hid_bpf_hw_check_params(ctx, buf, &size, HID_OUTPUT_REPORT, true);
+	ret = __hid_bpf_hw_check_params(ctx, buf, &size, HID_OUTPUT_REPORT);
 	if (ret)
 		return ret;
 
@@ -510,7 +506,7 @@ __hid_bpf_input_report(struct hid_bpf_ctx *ctx, enum hid_report_type type, u8 *b
 		return -EDEADLOCK;
 
 	/* check arguments */
-	ret = __hid_bpf_hw_check_params(ctx, buf, &size, type, false);
+	ret = __hid_bpf_hw_check_params(ctx, buf, &size, type);
 	if (ret)
 		return ret;
 
@@ -594,11 +590,11 @@ static const struct btf_kfunc_id_set hid_bpf_kfunc_set = {
 
 /* for syscall HID-BPF */
 BTF_KFUNCS_START(hid_bpf_syscall_kfunc_ids)
-BTF_ID_FLAGS(func, hid_bpf_allocate_context, KF_ACQUIRE | KF_RET_NULL | KF_SLEEPABLE)
-BTF_ID_FLAGS(func, hid_bpf_release_context, KF_RELEASE | KF_SLEEPABLE)
-BTF_ID_FLAGS(func, hid_bpf_hw_request, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, hid_bpf_hw_output_report, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, hid_bpf_input_report, KF_SLEEPABLE)
+BTF_ID_FLAGS(func, hid_bpf_allocate_context, KF_ACQUIRE | KF_RET_NULL)
+BTF_ID_FLAGS(func, hid_bpf_release_context, KF_RELEASE)
+BTF_ID_FLAGS(func, hid_bpf_hw_request)
+BTF_ID_FLAGS(func, hid_bpf_hw_output_report)
+BTF_ID_FLAGS(func, hid_bpf_input_report)
 BTF_KFUNCS_END(hid_bpf_syscall_kfunc_ids)
 
 static const struct btf_kfunc_id_set hid_bpf_syscall_kfunc_set = {

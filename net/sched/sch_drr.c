@@ -82,9 +82,8 @@ static int drr_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 			NL_SET_ERR_MSG(extack, "Specified DRR quantum cannot be zero");
 			return -EINVAL;
 		}
-		quantum = clamp_t(u32, quantum, 256, 1 << 20);
 	} else
-		quantum = clamp_t(u32, (u32)psched_mtu(qdisc_dev(sch)), 256, 1 << 20);
+		quantum = psched_mtu(qdisc_dev(sch));
 
 	if (cl != NULL) {
 		if (tca[TCA_RATE]) {
@@ -98,8 +97,10 @@ static int drr_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 			}
 		}
 
+		sch_tree_lock(sch);
 		if (tb[TCA_DRR_QUANTUM])
-			WRITE_ONCE(cl->quantum, quantum);
+			cl->quantum = quantum;
+		sch_tree_unlock(sch);
 
 		return 0;
 	}
@@ -250,7 +251,7 @@ static int drr_dump_class(struct Qdisc *sch, unsigned long arg,
 	nest = nla_nest_start_noflag(skb, TCA_OPTIONS);
 	if (nest == NULL)
 		goto nla_put_failure;
-	if (nla_put_u32(skb, TCA_DRR_QUANTUM, READ_ONCE(cl->quantum)))
+	if (nla_put_u32(skb, TCA_DRR_QUANTUM, cl->quantum))
 		goto nla_put_failure;
 	return nla_nest_end(skb, nest);
 
@@ -361,10 +362,10 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 	if (!cl_is_active(cl)) {
 		list_add_tail(&cl->alist, &q->active);
-		WRITE_ONCE(cl->deficit, READ_ONCE(cl->quantum));
+		WRITE_ONCE(cl->deficit, cl->quantum);
 	}
 
-	qstats_backlog_add(sch, len);
+	sch->qstats.backlog += len;
 	qdisc_qlen_inc(sch);
 	return err;
 }
@@ -402,7 +403,7 @@ static struct sk_buff *drr_dequeue(struct Qdisc *sch)
 			return skb;
 		}
 
-		WRITE_ONCE(cl->deficit, cl->deficit + READ_ONCE(cl->quantum));
+		WRITE_ONCE(cl->deficit, cl->deficit + cl->quantum);
 		list_move_tail(&cl->alist, &q->active);
 	}
 out:

@@ -1234,16 +1234,8 @@ static int handle_incoming_queue(struct netfront_queue *queue,
 	while ((skb = __skb_dequeue(rxq)) != NULL) {
 		int pull_to = NETFRONT_SKB_CB(skb)->pull_to;
 
-		/* pull_to comes from the first slot's length, which the
-		 * backend controls.  Make sure the head holds at least an
-		 * Ethernet header for eth_type_trans().
-		 */
-		if (!pskb_may_pull(skb, max(pull_to, ETH_HLEN))) {
-			kfree_skb(skb);
-			packets_dropped++;
-			queue->info->netdev->stats.rx_errors++;
-			continue;
-		}
+		if (pull_to > skb_headlen(skb))
+			__pskb_pull_tail(skb, pull_to - skb_headlen(skb));
 
 		/* Ethernet work: Delayed to here as it peeks the header. */
 		skb->protocol = eth_type_trans(skb, queue->info->netdev);
@@ -1346,10 +1338,8 @@ err:
 		skb->data_len = rx->status;
 		skb->len += rx->status;
 
-		if (unlikely(xennet_fill_frags(queue, skb, &tmpq))) {
-			__skb_queue_head(&tmpq, skb);
+		if (unlikely(xennet_fill_frags(queue, skb, &tmpq)))
 			goto err;
-		}
 
 		if (rx->flags & XEN_NETRXF_csum_blank)
 			skb->ip_summed = CHECKSUM_PARTIAL;

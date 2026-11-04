@@ -9,7 +9,6 @@
 #include <linux/rwsem.h>
 #include <linux/parser.h>
 #include <linux/namei.h>
-#include <linux/fs_struct.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
 
@@ -28,63 +27,6 @@ struct ksmbd_veto_pattern {
 	char			*pattern;
 	struct list_head	list;
 };
-
-#ifdef CONFIG_PROC_FS
-static const struct ksmbd_const_name ksmbd_share_flag_names[] = {
-	{KSMBD_SHARE_FLAG_AVAILABLE, "available"},
-	{KSMBD_SHARE_FLAG_BROWSEABLE, "browseable"},
-	{KSMBD_SHARE_FLAG_WRITEABLE, "writeable"},
-	{KSMBD_SHARE_FLAG_READONLY, "read-only"},
-	{KSMBD_SHARE_FLAG_GUEST_OK, "guest-ok"},
-	{KSMBD_SHARE_FLAG_GUEST_ONLY, "guest-only"},
-	{KSMBD_SHARE_FLAG_STORE_DOS_ATTRS, "store-dos-attrs"},
-	{KSMBD_SHARE_FLAG_OPLOCKS, "oplocks"},
-	{KSMBD_SHARE_FLAG_PIPE, "pipe"},
-	{KSMBD_SHARE_FLAG_HIDE_DOT_FILES, "hide-dot-files"},
-	{KSMBD_SHARE_FLAG_INHERIT_OWNER, "inherit-owner"},
-	{KSMBD_SHARE_FLAG_STREAMS, "streams"},
-	{KSMBD_SHARE_FLAG_FOLLOW_SYMLINKS, "follow-symlinks"},
-	{KSMBD_SHARE_FLAG_ACL_XATTR, "acl-xattr"},
-	{KSMBD_SHARE_FLAG_UPDATE, "update"},
-	{KSMBD_SHARE_FLAG_CROSSMNT, "crossmnt"},
-	{KSMBD_SHARE_FLAG_CONTINUOUS_AVAILABILITY, "continuous-availability"},
-	{KSMBD_SHARE_FLAG_ENCRYPT_DATA, "encrypt-data"},
-};
-
-static int proc_show_shares(struct seq_file *m, void *v)
-{
-	struct ksmbd_share_config *share;
-	int i;
-
-	down_read(&shares_table_lock);
-	hash_for_each(shares_table, i, share, hlist) {
-		seq_printf(m, "name:\t%s\n", share->name);
-		seq_printf(m, "type:\t%s\n",
-			   test_share_config_flag(share, KSMBD_SHARE_FLAG_PIPE) ?
-			   "pipe" : "disk");
-		seq_printf(m, "tree_connects:\t%d\n",
-			   atomic_read(&share->tree_connections));
-		seq_printf(m, "file_mask:\t0%07o\n", share->create_mask);
-		seq_printf(m, "directory_mask:\t0%07o\n", share->directory_mask);
-		seq_puts(m, "flags:\t");
-		ksmbd_proc_show_flag_names(m, ksmbd_share_flag_names,
-					   ARRAY_SIZE(ksmbd_share_flag_names),
-					   share->flags);
-		seq_puts(m, "\n\n");
-	}
-	up_read(&shares_table_lock);
-	return 0;
-}
-
-int create_proc_shares(void)
-{
-	if (!ksmbd_proc_create("shares", proc_show_shares, NULL))
-		return -ENOMEM;
-	return 0;
-}
-#else
-int create_proc_shares(void) { return 0; }
-#endif
 
 static unsigned int share_name_hash(const char *name)
 {
@@ -146,9 +88,9 @@ static struct ksmbd_share_config *__share_lookup(const char *name)
 
 static int parse_veto_list(struct ksmbd_share_config *share,
 			   char *veto_list,
-			   size_t veto_list_sz)
+			   int veto_list_sz)
 {
-	size_t sz;
+	int sz = 0;
 
 	if (!veto_list_sz)
 		return 0;
@@ -156,7 +98,7 @@ static int parse_veto_list(struct ksmbd_share_config *share,
 	while (veto_list_sz > 0) {
 		struct ksmbd_veto_pattern *p;
 
-		sz = strnlen(veto_list, veto_list_sz);
+		sz = strlen(veto_list);
 		if (!sz)
 			break;
 
@@ -164,16 +106,13 @@ static int parse_veto_list(struct ksmbd_share_config *share,
 		if (!p)
 			return -ENOMEM;
 
-		p->pattern = kstrndup(veto_list, sz, KSMBD_DEFAULT_GFP);
+		p->pattern = kstrdup(veto_list, KSMBD_DEFAULT_GFP);
 		if (!p->pattern) {
 			kfree(p);
 			return -ENOMEM;
 		}
 
 		list_add(&p->list, &share->veto_list);
-
-		if (sz == veto_list_sz)
-			break;
 
 		veto_list += sz + 1;
 		veto_list_sz -= (sz + 1);
@@ -217,38 +156,21 @@ static struct ksmbd_share_config *share_config_request(struct ksmbd_work *work,
 
 	share->flags = resp->flags;
 	atomic_set(&share->refcount, 1);
-	ksmbd_share_tree_conn_init(share);
 	INIT_LIST_HEAD(&share->veto_list);
 	share->name = kstrdup(name, KSMBD_DEFAULT_GFP);
-	if (!share->name) {
-		kill_share(share);
-		share = NULL;
-		goto out;
-	}
 
 	if (!test_share_config_flag(share, KSMBD_SHARE_FLAG_PIPE)) {
-		size_t path_len;
+		int path_len = PATH_MAX;
 
-		if (resp->payload_sz <= resp->veto_list_sz) {
-			ret = -EINVAL;
-		} else {
+		if (resp->payload_sz)
 			path_len = resp->payload_sz - resp->veto_list_sz;
-			if (resp->veto_list_sz)
-				path_len--;
 
-			if (!path_len) {
-				ret = -EINVAL;
-			} else {
-				share->path = kstrndup(
-					ksmbd_share_config_path(resp),
-					path_len, KSMBD_DEFAULT_GFP);
-				if (!share->path)
-					ret = -ENOMEM;
-				else
-					ret = 0;
-			}
-		}
-		if (share->path) {
+		share->path = kstrndup(ksmbd_share_config_path(resp), path_len,
+				      KSMBD_DEFAULT_GFP);
+		if (!share->path) {
+			ret = -ENOMEM;
+		} else {
+			ret = 0;
 			share->path_sz = strlen(share->path);
 			while (share->path_sz > 1 &&
 			       share->path[share->path_sz - 1] == '/')
@@ -271,8 +193,7 @@ static struct ksmbd_share_config *share_config_request(struct ksmbd_work *work,
 				goto out;
 			}
 
-			scoped_with_init_fs()
-				ret = kern_path(share->path, 0, &share->vfs_path);
+			ret = kern_path(share->path, 0, &share->vfs_path);
 			ksmbd_revert_fsids(work);
 			if (ret) {
 				ksmbd_debug(SMB, "failed to access '%s'\n",
@@ -282,7 +203,7 @@ static struct ksmbd_share_config *share_config_request(struct ksmbd_work *work,
 				share->path = NULL;
 			}
 		}
-		if (ret) {
+		if (ret || !share->name) {
 			kill_share(share);
 			share = NULL;
 			goto out;

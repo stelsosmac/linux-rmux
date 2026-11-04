@@ -34,11 +34,6 @@ enum {
 
 #define VHOST_VDPA_DEV_MAX (1U << MINORBITS)
 
-static int max_iotlb_entries = 2048;
-module_param(max_iotlb_entries, int, 0444);
-MODULE_PARM_DESC(max_iotlb_entries,
-		 "Maximum number of iotlb entries. (default: 2048)");
-
 #define VHOST_VDPA_IOTLB_BUCKETS 16
 
 struct vhost_vdpa_as {
@@ -58,12 +53,9 @@ struct vhost_vdpa {
 	struct cdev cdev;
 	atomic_t opened;
 	u32 nvqs;
-	u16 vq_num_max;
 	int virtio_id;
 	int minor;
 	struct eventfd_ctx *config_ctx;
-	/* Serialises vhost_vdpa_config_cb() against config_ctx being replaced. */
-	spinlock_t config_lock;
 	int in_batch;
 	struct vdpa_iova_range range;
 	u32 batch_asid;
@@ -117,14 +109,12 @@ static struct vhost_vdpa_as *vhost_vdpa_alloc_as(struct vhost_vdpa *v, u32 asid)
 
 	if (asid >= v->vdpa->nas)
 		return NULL;
-	if (max_iotlb_entries <= 0)
-		return NULL;
 
 	as = kmalloc_obj(*as);
 	if (!as)
 		return NULL;
 
-	vhost_iotlb_init(&as->iotlb, max_iotlb_entries, 0);
+	vhost_iotlb_init(&as->iotlb, 0, 0);
 	as->id = asid;
 	hlist_add_head(&as->hash_link, head);
 
@@ -197,12 +187,10 @@ static irqreturn_t vhost_vdpa_virtqueue_cb(void *private)
 static irqreturn_t vhost_vdpa_config_cb(void *private)
 {
 	struct vhost_vdpa *v = private;
-	unsigned long flags;
+	struct eventfd_ctx *config_ctx = v->config_ctx;
 
-	spin_lock_irqsave(&v->config_lock, flags);
-	if (v->config_ctx)
-		eventfd_signal(v->config_ctx);
-	spin_unlock_irqrestore(&v->config_lock, flags);
+	if (config_ctx)
+		eventfd_signal(config_ctx);
 
 	return IRQ_HANDLED;
 }
@@ -241,9 +229,7 @@ static void vhost_vdpa_unsetup_vq_irq(struct vhost_vdpa *v, u16 qid)
 static int _compat_vdpa_reset(struct vhost_vdpa *v)
 {
 	struct vdpa_device *vdpa = v->vdpa;
-	const struct vdpa_config_ops *ops = vdpa->config;
 	u32 flags = 0;
-	int ret;
 
 	v->suspended = false;
 
@@ -253,14 +239,7 @@ static int _compat_vdpa_reset(struct vhost_vdpa *v)
 			 VDPA_RESET_F_CLEAN_MAP : 0;
 	}
 
-	v->vq_num_max = 0;
-	ret = vdpa_reset(vdpa, flags);
-	if (!ret) {
-		/* Some backends derive the max from mutable queue state. */
-		v->vq_num_max = ops->get_vq_num_max(vdpa);
-	}
-
-	return ret;
+	return vdpa_reset(vdpa, flags);
 }
 
 static int vhost_vdpa_reset(struct vhost_vdpa *v)
@@ -532,22 +511,15 @@ static long vhost_vdpa_get_vring_num(struct vhost_vdpa *v, u16 __user *argp)
 
 static void vhost_vdpa_config_put(struct vhost_vdpa *v)
 {
-	struct eventfd_ctx *ctx;
-	unsigned long flags;
-
-	spin_lock_irqsave(&v->config_lock, flags);
-	ctx = v->config_ctx;
-	v->config_ctx = NULL;
-	spin_unlock_irqrestore(&v->config_lock, flags);
-
-	if (ctx)
-		eventfd_ctx_put(ctx);
+	if (v->config_ctx) {
+		eventfd_ctx_put(v->config_ctx);
+		v->config_ctx = NULL;
+	}
 }
 
 static long vhost_vdpa_set_config_call(struct vhost_vdpa *v, u32 __user *argp)
 {
 	struct vdpa_callback cb;
-	unsigned long flags;
 	int fd;
 	struct eventfd_ctx *ctx;
 
@@ -557,19 +529,17 @@ static long vhost_vdpa_set_config_call(struct vhost_vdpa *v, u32 __user *argp)
 		return  -EFAULT;
 
 	ctx = fd == VHOST_FILE_UNBIND ? NULL : eventfd_ctx_fdget(fd);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
-
-	spin_lock_irqsave(&v->config_lock, flags);
 	swap(ctx, v->config_ctx);
-	spin_unlock_irqrestore(&v->config_lock, flags);
 
-	/*
-	 * The callback can no longer reach the old context, so this is the
-	 * last reference to it.
-	 */
-	if (ctx)
+	if (!IS_ERR_OR_NULL(ctx))
 		eventfd_ctx_put(ctx);
+
+	if (IS_ERR(v->config_ctx)) {
+		long ret = PTR_ERR(v->config_ctx);
+
+		v->config_ctx = NULL;
+		return ret;
+	}
 
 	v->vdpa->config->set_config_cb(v->vdpa, &cb);
 
@@ -671,15 +641,9 @@ static long vhost_vdpa_vring_ioctl(struct vhost_vdpa *v, unsigned int cmd,
 	u32 idx;
 	long r;
 
-	if (cmd == VHOST_SET_VRING_NUM) {
-		if (copy_from_user(&s, argp, sizeof(s)))
-			return -EFAULT;
-		idx = s.index;
-	} else {
-		r = get_user(idx, (u32 __user *)argp);
-		if (r < 0)
-			return r;
-	}
+	r = get_user(idx, (u32 __user *)argp);
+	if (r < 0)
+		return r;
 
 	if (idx >= v->nvqs)
 		return -ENOBUFS;
@@ -688,23 +652,6 @@ static long vhost_vdpa_vring_ioctl(struct vhost_vdpa *v, unsigned int cmd,
 	vq = &v->vqs[idx];
 
 	switch (cmd) {
-	case VHOST_SET_VRING_NUM:
-		mutex_lock(&vq->mutex);
-		if (vq->private_data) {
-			r = -EBUSY;
-		} else if (!s.num || s.num > 0xffff ||
-			   s.num > v->vq_num_max ||
-			   (s.num & (s.num - 1))) {
-			r = -EINVAL;
-		} else {
-			vq->num = s.num;
-			r = 0;
-		}
-		mutex_unlock(&vq->mutex);
-		if (r)
-			return r;
-		ops->set_vq_num(vdpa, idx, s.num);
-		return 0;
 	case VHOST_VDPA_SET_VRING_ENABLE:
 		if (copy_from_user(&s, argp, sizeof(s)))
 			return -EFAULT;
@@ -818,6 +765,9 @@ static long vhost_vdpa_vring_ioctl(struct vhost_vdpa *v, unsigned int cmd,
 		ops->set_vq_cb(vdpa, idx, &cb);
 		break;
 
+	case VHOST_SET_VRING_NUM:
+		ops->set_vq_num(vdpa, idx, vq->num);
+		break;
 	}
 
 	return r;
@@ -1152,7 +1102,6 @@ static int vhost_vdpa_pa_map(struct vhost_vdpa *v,
 	unsigned int gup_flags = FOLL_LONGTERM;
 	unsigned long npages, cur_base, map_pfn, last_pfn = 0;
 	unsigned long lock_limit, sz2pin, nchunks, i;
-	unsigned long page_offset;
 	u64 start = iova;
 	long pinned;
 	int ret = 0;
@@ -1165,13 +1114,7 @@ static int vhost_vdpa_pa_map(struct vhost_vdpa *v,
 	if (perm & VHOST_ACCESS_WO)
 		gup_flags |= FOLL_WRITE;
 
-	page_offset = iova & ~PAGE_MASK;
-	if (size > ULONG_MAX - page_offset) {
-		ret = -EINVAL;
-		goto free;
-	}
-
-	npages = PFN_UP(size + page_offset);
+	npages = PFN_UP(size + (iova & ~PAGE_MASK));
 	if (!npages) {
 		ret = -EINVAL;
 		goto free;
@@ -1656,7 +1599,6 @@ static int vhost_vdpa_probe(struct vdpa_device *vdpa)
 	}
 
 	atomic_set(&v->opened, 0);
-	spin_lock_init(&v->config_lock);
 	v->minor = minor;
 	v->vdpa = vdpa;
 	v->nvqs = vdpa->nvqs;

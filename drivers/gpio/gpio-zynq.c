@@ -25,7 +25,6 @@
 #define VERSAL_GPIO_MAX_BANK	4
 #define PMC_GPIO_MAX_BANK	5
 #define VERSAL_UNUSED_BANKS	2
-#define EIO_GPIO_MAX_BANK	2
 
 #define ZYNQ_GPIO_BANK0_NGPIO	32
 #define ZYNQ_GPIO_BANK1_NGPIO	22
@@ -798,7 +797,15 @@ static int zynq_gpio_runtime_resume(struct device *dev)
 
 static int zynq_gpio_request(struct gpio_chip *chip, unsigned int offset)
 {
-	return pm_runtime_resume_and_get(chip->parent);
+	int ret;
+
+	ret = pm_runtime_get_sync(chip->parent);
+
+	/*
+	 * If the device is already active pm_runtime_get() will return 1 on
+	 * success, but gpio_request still needs to return 0.
+	 */
+	return ret < 0 ? ret : 0;
 }
 
 static void zynq_gpio_free(struct gpio_chip *chip, unsigned int offset)
@@ -809,16 +816,6 @@ static void zynq_gpio_free(struct gpio_chip *chip, unsigned int offset)
 static const struct dev_pm_ops zynq_gpio_dev_pm_ops = {
 	SYSTEM_SLEEP_PM_OPS(zynq_gpio_suspend, zynq_gpio_resume)
 	RUNTIME_PM_OPS(zynq_gpio_runtime_suspend, zynq_gpio_runtime_resume, NULL)
-};
-
-static const struct zynq_platform_data eio_gpio_def = {
-	.label = "eio_gpio",
-	.ngpio = 52,
-	.max_bank = EIO_GPIO_MAX_BANK,
-	.bank_min[0] = 0,
-	.bank_max[0] = 25, /* 0 to 25 are connected to MIOs (26 pins) */
-	.bank_min[1] = 26,
-	.bank_max[1] = 51, /* Bank 1 are connected to MIOs (26 pins) */
 };
 
 static const struct zynq_platform_data versal_gpio_def = {
@@ -885,7 +882,6 @@ static const struct of_device_id zynq_gpio_of_match[] = {
 	{ .compatible = "xlnx,zynqmp-gpio-1.0", .data = &zynqmp_gpio_def },
 	{ .compatible = "xlnx,versal-gpio-1.0", .data = &versal_gpio_def },
 	{ .compatible = "xlnx,pmc-gpio-1.0", .data = &pmc_gpio_def },
-	{ .compatible = "xlnx,eio-gpio-1.0", .data = &eio_gpio_def },
 	{ /* end of table */ }
 };
 MODULE_DEVICE_TABLE(of, zynq_gpio_of_match);

@@ -139,14 +139,10 @@ xfs_qm_adjust_dqlimits(
 		dq->q_ino.softlimit = defq->ino.soft;
 	if (!dq->q_ino.hardlimit)
 		dq->q_ino.hardlimit = defq->ino.hard;
-	if (!dq->q_rtb.softlimit) {
+	if (!dq->q_rtb.softlimit)
 		dq->q_rtb.softlimit = defq->rtb.soft;
-		prealloc = 1;
-	}
-	if (!dq->q_rtb.hardlimit) {
+	if (!dq->q_rtb.hardlimit)
 		dq->q_rtb.hardlimit = defq->rtb.hard;
-		prealloc = 1;
-	}
 
 	if (prealloc)
 		xfs_dquot_set_prealloc_limits(dq);
@@ -782,7 +778,7 @@ xfs_dq_get_next_id(
 	lock_flags = xfs_ilock_data_map_shared(quotip);
 	error = xfs_iread_extents(NULL, quotip, XFS_DATA_FORK);
 	if (error)
-		goto out_unlock;
+		return error;
 
 	if (xfs_iext_lookup_extent(quotip, &quotip->i_df, start, &cur, &got)) {
 		/* contiguous chunk, bump startoff for the id calculation */
@@ -793,7 +789,6 @@ xfs_dq_get_next_id(
 		error = -ENOENT;
 	}
 
-out_unlock:
 	xfs_iunlock(quotip, lock_flags);
 
 	return error;

@@ -361,17 +361,6 @@ attribute-sets:
         type: u32
         byte-order: big-endian
   -
-    name: filter-attrs
-    attributes:
-      -
-        name: orig-flags
-        type: u32
-        doc: bitmask of tuple fields to filter on, original direction
-      -
-        name: reply-flags
-        type: u32
-        doc: bitmask of tuple fields to filter on, reply direction
-  -
     name: conntrack-attrs
     attributes:
       -
@@ -477,7 +466,7 @@ attribute-sets:
       -
         name: filter
         type: nest
-        nested-attributes: filter-attrs
+        nested-attributes: tuple-attrs
       -
         name: status-mask
         type: u32
@@ -602,14 +591,10 @@ operations:
         request:
           value: 0x101
           attributes:
-            - tuple-orig
-            - tuple-reply
-            - status
             - mark
-            - zone
-            - mark-mask
             - filter
-            - status-mask
+            - status
+            - zone
         reply:
           value: 0x100
           attributes:

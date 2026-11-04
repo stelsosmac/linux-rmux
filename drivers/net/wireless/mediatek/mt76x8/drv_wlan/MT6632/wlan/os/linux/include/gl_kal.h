@@ -689,7 +689,15 @@ static inline void kalCfg80211ScanDone(struct cfg80211_scan_request *request,
 
 /* string operation */
 #define kalStrCpy(dest, src)                        strcpy(dest, src)
-#define kalStrnCpy(dest, src, n)                    strncpy(dest, src, n)
+/* Linux 7.2 removed strncpy(); keep its copy-and-zero-fill semantics. */
+static inline void *kalStrnCpy(void *dest, const void *src, size_t n)
+{
+	size_t len = strnlen(src, n);
+
+	memcpy(dest, src, len);
+	memset((u8 *)dest + len, 0, n - len);
+	return dest;
+}
 #define kalStrCmp(ct, cs)                           strcmp(ct, cs)
 #define kalStrnCmp(ct, cs, n)                       strncmp(ct, cs, n)
 #define kalStrChr(s, c)                             strchr(s, c)

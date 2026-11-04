@@ -8,7 +8,6 @@
 #include "pvr_vm.h"
 
 #include <drm/drm_gem.h>
-#include <drm/drm_print.h>
 #include <linux/slab.h>
 #include <linux/xarray.h>
 #include <uapi/drm/pvr_drm.h>
@@ -613,21 +612,13 @@ pvr_free_list_process_reconstruct_req(struct pvr_device *pvr_dev,
 	};
 	struct rogue_fwif_freelists_reconstruction_data *resp =
 		&resp_cmd.cmd_data.free_lists_reconstruction_data;
-	u32 count = min_t(u32, req->freelist_count,
-			  ARRAY_SIZE(req->freelist_ids));
 
-	if (count != req->freelist_count) {
-		drm_warn_once(from_pvr_device(pvr_dev),
-			      "Requested reconstruction of %u freelists, limiting to %u\n",
-			      req->freelist_count, count);
-	}
-
-	for (u32 i = 0; i < count; i++)
+	for (u32 i = 0; i < req->freelist_count; i++)
 		pvr_free_list_reconstruct(pvr_dev, req->freelist_ids[i]);
 
-	resp->freelist_count = count;
+	resp->freelist_count = req->freelist_count;
 	memcpy(resp->freelist_ids, req->freelist_ids,
-	       count * sizeof(resp->freelist_ids[0]));
+	       req->freelist_count * sizeof(resp->freelist_ids[0]));
 
 	WARN_ON(pvr_kccb_send_cmd(pvr_dev, &resp_cmd, NULL));
 }

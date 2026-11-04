@@ -96,7 +96,7 @@ static void psp_assoc_free(struct work_struct *work)
 	struct psp_dev *psd = pas->psd;
 
 	mutex_lock(&psd->lock);
-	if (psp_dev_is_registered(psd))
+	if (psd->ops)
 		psp_dev_tx_key_del(psd, pas);
 	mutex_unlock(&psd->lock);
 	psp_dev_put(psd);
@@ -142,10 +142,6 @@ int psp_sock_assoc_set_rx(struct sock *sk, struct psp_assoc *pas,
 	if (psp_sk_assoc(sk)) {
 		NL_SET_ERR_MSG(extack, "Socket already has PSP state");
 		err = -EBUSY;
-		goto exit_unlock;
-	} else if (sk_has_decrypt_user(sk)) {
-		NL_SET_ERR_MSG(extack, "Socket has incompatible state");
-		err = -EINVAL;
 		goto exit_unlock;
 	}
 

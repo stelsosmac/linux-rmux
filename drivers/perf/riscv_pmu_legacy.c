@@ -8,6 +8,7 @@
  * which are in turn based on sparc64 and x86 code.
  */
 
+#include <linux/mod_devicetable.h>
 #include <linux/perf/riscv_pmu.h>
 #include <linux/platform_device.h>
 
@@ -110,9 +111,8 @@ static void pmu_legacy_init(struct riscv_pmu *pmu)
 {
 	pr_info("Legacy PMU implementation is available\n");
 
-	bitmap_zero(pmu->cmask, RISCV_MAX_COUNTERS);
-	set_bit(RISCV_PMU_LEGACY_CYCLE, pmu->cmask);
-	set_bit(RISCV_PMU_LEGACY_INSTRET, pmu->cmask);
+	pmu->cmask = BIT(RISCV_PMU_LEGACY_CYCLE) |
+		BIT(RISCV_PMU_LEGACY_INSTRET);
 	pmu->ctr_start = pmu_legacy_ctr_start;
 	pmu->ctr_stop = NULL;
 	pmu->event_map = pmu_legacy_event_map;

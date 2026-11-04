@@ -8,7 +8,6 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/prctl.h>
-#include <linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
 #include <linux/string.h>
@@ -476,7 +475,7 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 		 * was never mapped with PROT_MTE.
 		 */
 		if (!(vma->vm_flags & VM_MTE)) {
-			err = -EIO;
+			err = -EOPNOTSUPP;
 			put_page(page);
 			break;
 		}
@@ -538,13 +537,16 @@ static int access_remote_tags(struct task_struct *tsk, unsigned long addr,
 	if (!mm)
 		return -EPERM;
 
-	if (!ptracer_access_allowed(tsk)) {
+	if (!tsk->ptrace || (current != tsk->parent) ||
+	    ((get_dumpable(mm) != SUID_DUMP_USER) &&
+	     !ptracer_capable(tsk, mm->user_ns))) {
 		mmput(mm);
 		return -EPERM;
 	}
 
 	ret = __access_remote_tags(mm, addr, kiov, gup_flags);
 	mmput(mm);
+
 	return ret;
 }
 

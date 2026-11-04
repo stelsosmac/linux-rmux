@@ -87,8 +87,6 @@ static int eprobe_dyn_event_show(struct seq_file *m, struct dyn_event *ev)
 		seq_printf(m, " %s=%s", ep->tp.args[i].name, ep->tp.args[i].comm);
 	seq_putc(m, '\n');
 
-	trace_probe_dump_args(m, &ep->tp);
-
 	return 0;
 }
 
@@ -930,7 +928,7 @@ static int __trace_eprobe_create(int argc, const char *argv[])
 	} else
 		ep->filter_str = NULL;
 
-	ctx = kzalloc_obj(*ctx);
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 	ctx->event = ep->event;

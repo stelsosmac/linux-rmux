@@ -72,8 +72,9 @@ TC_INDIRECT_SCOPE int tcf_skbedit_act(struct sk_buff *skb,
 	}
 	if (params->flags & SKBEDIT_F_QUEUE_MAPPING &&
 	    skb->dev->real_num_tx_queues > params->queue_mapping) {
-		if (skb_at_tc_egress(skb))
-			netdev_xmit_skip_txqueue(true);
+#ifdef CONFIG_NET_EGRESS
+		netdev_xmit_skip_txqueue(true);
+#endif
 		skb_set_queue_mapping(skb, tcf_skbedit_hash(params, skb));
 	}
 	if (params->flags & SKBEDIT_F_MARK) {
@@ -85,7 +86,7 @@ TC_INDIRECT_SCOPE int tcf_skbedit_act(struct sk_buff *skb,
 	return params->action;
 
 err:
-	qstats_cpu_drop_inc(d->common.cpu_qstats);
+	qstats_drop_inc(this_cpu_ptr(d->common.cpu_qstats));
 	return TC_ACT_SHOT;
 }
 

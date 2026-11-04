@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
    BlueZ - Bluetooth protocol stack for Linux
    Copyright (C) 2000-2001 Qualcomm Incorporated
 
    Written 2000,2001 by Maxim Krasnyansky <maxk@qualcomm.com>
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License version 2 as
+   published by the Free Software Foundation;
 
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -24,7 +27,6 @@
 #include <linux/export.h>
 #include <linux/utsname.h>
 #include <linux/sched.h>
-#include <linux/uio.h>
 #include <linux/unaligned.h>
 
 #include <net/bluetooth/bluetooth.h>
@@ -164,7 +166,6 @@ static bool is_filtered_packet(struct sock *sk, struct sk_buff *skb)
 {
 	struct hci_filter *flt;
 	int flt_type, flt_event;
-	u8 event;
 
 	/* Apply filter */
 	flt = &hci_pi(sk)->filter;
@@ -178,11 +179,7 @@ static bool is_filtered_packet(struct sock *sk, struct sk_buff *skb)
 	if (hci_skb_pkt_type(skb) != HCI_EVENT_PKT)
 		return false;
 
-	if (skb->len < 1)
-		return true;
-
-	event = *(__u8 *)skb->data;
-	flt_event = event & HCI_FLT_EVENT_BITS;
+	flt_event = (*(__u8 *)skb->data & HCI_FLT_EVENT_BITS);
 
 	if (!hci_test_bit(flt_event, &flt->event_mask))
 		return true;
@@ -191,17 +188,11 @@ static bool is_filtered_packet(struct sock *sk, struct sk_buff *skb)
 	if (!flt->opcode)
 		return false;
 
-	if (event == HCI_EV_CMD_COMPLETE && skb->len < 5)
-		return true;
-
-	if (event == HCI_EV_CMD_COMPLETE &&
+	if (flt_event == HCI_EV_CMD_COMPLETE &&
 	    flt->opcode != get_unaligned((__le16 *)(skb->data + 3)))
 		return true;
 
-	if (event == HCI_EV_CMD_STATUS && skb->len < 6)
-		return true;
-
-	if (event == HCI_EV_CMD_STATUS &&
+	if (flt_event == HCI_EV_CMD_STATUS &&
 	    flt->opcode != get_unaligned((__le16 *)(skb->data + 4)))
 		return true;
 
@@ -1223,10 +1214,8 @@ static int hci_sock_bind(struct socket *sock, struct sockaddr_unsized *addr,
 	 */
 	hdev = hci_pi(sk)->hdev;
 	if (hdev && hci_dev_test_flag(hdev, HCI_UNREGISTER)) {
-		write_lock(&hci_sk_list.lock);
 		hci_pi(sk)->hdev = NULL;
 		sk->sk_state = BT_OPEN;
-		write_unlock(&hci_sk_list.lock);
 		hci_dev_put(hdev);
 	}
 	hdev = NULL;
@@ -1894,8 +1883,7 @@ static int hci_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 		u16 ocf = hci_opcode_ocf(opcode);
 
 		if (((ogf > HCI_SFLT_MAX_OGF) ||
-		     (ocf > HCI_FLT_OCF_BITS) ||
-		     !hci_test_bit(ocf,
+		     !hci_test_bit(ocf & HCI_FLT_OCF_BITS,
 				   &hci_sec_filter.ocf_mask[ogf])) &&
 		    !capable(CAP_NET_RAW)) {
 			err = -EPERM;
@@ -2075,7 +2063,7 @@ done:
 }
 
 static int hci_sock_getsockopt_old(struct socket *sock, int level, int optname,
-				   sockopt_t *sopt)
+				   char __user *optval, int __user *optlen)
 {
 	struct hci_ufilter uf;
 	struct sock *sk = sock->sk;
@@ -2083,7 +2071,8 @@ static int hci_sock_getsockopt_old(struct socket *sock, int level, int optname,
 
 	BT_DBG("sk %p, opt %d", sk, optname);
 
-	len = sopt->optlen;
+	if (get_user(len, optlen))
+		return -EFAULT;
 
 	lock_sock(sk);
 
@@ -2099,8 +2088,7 @@ static int hci_sock_getsockopt_old(struct socket *sock, int level, int optname,
 		else
 			opt = 0;
 
-		if (copy_to_iter(&opt, sizeof(opt), &sopt->iter_out) !=
-		    sizeof(opt))
+		if (put_user(opt, optval))
 			err = -EFAULT;
 		break;
 
@@ -2110,8 +2098,7 @@ static int hci_sock_getsockopt_old(struct socket *sock, int level, int optname,
 		else
 			opt = 0;
 
-		if (copy_to_iter(&opt, sizeof(opt), &sopt->iter_out) !=
-		    sizeof(opt))
+		if (put_user(opt, optval))
 			err = -EFAULT;
 		break;
 
@@ -2127,7 +2114,7 @@ static int hci_sock_getsockopt_old(struct socket *sock, int level, int optname,
 		}
 
 		len = min_t(unsigned int, len, sizeof(uf));
-		if (copy_to_iter(&uf, len, &sopt->iter_out) != len)
+		if (copy_to_user(optval, &uf, len))
 			err = -EFAULT;
 		break;
 
@@ -2142,16 +2129,16 @@ done:
 }
 
 static int hci_sock_getsockopt(struct socket *sock, int level, int optname,
-			       sockopt_t *sopt)
+			       char __user *optval, int __user *optlen)
 {
 	struct sock *sk = sock->sk;
 	int err = 0;
-	u16 mtu;
 
 	BT_DBG("sk %p, opt %d", sk, optname);
 
 	if (level == SOL_HCI)
-		return hci_sock_getsockopt_old(sock, level, optname, sopt);
+		return hci_sock_getsockopt_old(sock, level, optname, optval,
+					       optlen);
 
 	if (level != SOL_BLUETOOTH)
 		return -ENOPROTOOPT;
@@ -2161,9 +2148,7 @@ static int hci_sock_getsockopt(struct socket *sock, int level, int optname,
 	switch (optname) {
 	case BT_SNDMTU:
 	case BT_RCVMTU:
-		mtu = hci_pi(sk)->mtu;
-		if (copy_to_iter(&mtu, sizeof(mtu), &sopt->iter_out) !=
-		    sizeof(mtu))
+		if (put_user(hci_pi(sk)->mtu, (u16 __user *)optval))
 			err = -EFAULT;
 		break;
 
@@ -2200,7 +2185,7 @@ static const struct proto_ops hci_sock_ops = {
 	.listen		= sock_no_listen,
 	.shutdown	= sock_no_shutdown,
 	.setsockopt	= hci_sock_setsockopt,
-	.getsockopt_iter = hci_sock_getsockopt,
+	.getsockopt	= hci_sock_getsockopt,
 	.connect	= sock_no_connect,
 	.socketpair	= sock_no_socketpair,
 	.accept		= sock_no_accept,

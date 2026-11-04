@@ -127,10 +127,8 @@ static void ntb_netdev_rx_handler(struct ntb_transport_qp *qp, void *qp_data,
 {
 	struct ntb_netdev_queue *q = qp_data;
 	struct ntb_netdev *dev = q->ntdev;
-	struct pcpu_sw_netstats *tstats;
-	struct sk_buff *skb, *new_skb;
 	struct net_device *ndev;
-	unsigned long flags;
+	struct sk_buff *skb;
 	int rc;
 
 	ndev = dev->ndev;
@@ -141,20 +139,8 @@ static void ntb_netdev_rx_handler(struct ntb_transport_qp *qp, void *qp_data,
 	netdev_dbg(ndev, "%s: %d byte payload received\n", __func__, len);
 
 	if (len < 0) {
-		DEV_STATS_INC(ndev, rx_errors);
-		DEV_STATS_INC(ndev, rx_length_errors);
-		goto enqueue_again;
-	}
-
-	tstats = this_cpu_ptr(ndev->tstats);
-	flags = u64_stats_update_begin_irqsave(&tstats->syncp);
-	u64_stats_inc(&tstats->rx_packets);
-	u64_stats_add(&tstats->rx_bytes, len);
-	u64_stats_update_end_irqrestore(&tstats->syncp, flags);
-
-	new_skb = netdev_alloc_skb(ndev, ndev->mtu + ETH_HLEN);
-	if (!new_skb) {
-		DEV_STATS_INC(ndev, rx_dropped);
+		ndev->stats.rx_errors++;
+		ndev->stats.rx_length_errors++;
 		goto enqueue_again;
 	}
 
@@ -163,16 +149,27 @@ static void ntb_netdev_rx_handler(struct ntb_transport_qp *qp, void *qp_data,
 	skb->ip_summed = CHECKSUM_NONE;
 	skb_record_rx_queue(skb, q->qid);
 
-	netif_rx(skb);
+	if (netif_rx(skb) == NET_RX_DROP) {
+		ndev->stats.rx_errors++;
+		ndev->stats.rx_dropped++;
+	} else {
+		ndev->stats.rx_packets++;
+		ndev->stats.rx_bytes += len;
+	}
 
-	skb = new_skb;
+	skb = netdev_alloc_skb(ndev, ndev->mtu + ETH_HLEN);
+	if (!skb) {
+		ndev->stats.rx_errors++;
+		ndev->stats.rx_frame_errors++;
+		return;
+	}
 
 enqueue_again:
 	rc = ntb_transport_rx_enqueue(qp, skb, skb->data, ndev->mtu + ETH_HLEN);
 	if (rc) {
 		dev_kfree_skb_any(skb);
-		DEV_STATS_INC(ndev, rx_errors);
-		DEV_STATS_INC(ndev, rx_fifo_errors);
+		ndev->stats.rx_errors++;
+		ndev->stats.rx_fifo_errors++;
 	}
 }
 
@@ -201,10 +198,8 @@ static int __ntb_netdev_maybe_stop_tx(struct net_device *netdev,
 static int ntb_netdev_maybe_stop_tx(struct net_device *ndev,
 				    struct ntb_netdev_queue *q, int size)
 {
-	if (__netif_subqueue_stopped(ndev, q->qid))
-		return -EBUSY;
-
-	if (ntb_transport_tx_free_entry(q->qp) >= size)
+	if (__netif_subqueue_stopped(ndev, q->qid) ||
+	    (ntb_transport_tx_free_entry(q->qp) >= size))
 		return 0;
 
 	return __ntb_netdev_maybe_stop_tx(ndev, q, size);
@@ -215,39 +210,25 @@ static void ntb_netdev_tx_handler(struct ntb_transport_qp *qp, void *qp_data,
 {
 	struct ntb_netdev_queue *q = qp_data;
 	struct ntb_netdev *dev = q->ntdev;
-	struct pcpu_sw_netstats *tstats;
 	struct net_device *ndev;
 	struct sk_buff *skb;
-	unsigned long flags;
-	bool registered;
 
 	ndev = dev->ndev;
 	skb = data;
 	if (!skb || !ndev)
 		return;
 
-	rcu_read_lock();
-	registered = READ_ONCE(ndev->reg_state) == NETREG_REGISTERED;
-	if (!registered)
-		goto free_skb;
-
 	if (len > 0) {
-		/* The memcpy kthread can migrate, so pin the per-CPU update. */
-		tstats = get_cpu_ptr(ndev->tstats);
-		flags = u64_stats_update_begin_irqsave(&tstats->syncp);
-		u64_stats_inc(&tstats->tx_packets);
-		u64_stats_add(&tstats->tx_bytes, skb->len);
-		u64_stats_update_end_irqrestore(&tstats->syncp, flags);
-		put_cpu_ptr(ndev->tstats);
+		ndev->stats.tx_packets++;
+		ndev->stats.tx_bytes += skb->len;
 	} else {
-		DEV_STATS_INC(ndev, tx_errors);
-		DEV_STATS_INC(ndev, tx_aborted_errors);
+		ndev->stats.tx_errors++;
+		ndev->stats.tx_aborted_errors++;
 	}
 
-free_skb:
 	dev_kfree_skb_any(skb);
 
-	if (registered && ntb_transport_tx_free_entry(qp) >= tx_start) {
+	if (ntb_transport_tx_free_entry(qp) >= tx_start) {
 		/* Make sure anybody stopping the queue after this sees the new
 		 * value of ntb_transport_tx_free_entry()
 		 */
@@ -256,7 +237,6 @@ free_skb:
 		    ntb_transport_link_query(q->qp))
 			netif_wake_subqueue(ndev, q->qid);
 	}
-	rcu_read_unlock();
 }
 
 static const struct ntb_queue_handlers ntb_netdev_handlers = {
@@ -275,30 +255,21 @@ static netdev_tx_t ntb_netdev_start_xmit(struct sk_buff *skb,
 
 	q = &dev->queues[qid];
 
-	if (unlikely(ntb_netdev_maybe_stop_tx(ndev, q, tx_stop)))
-		return NETDEV_TX_BUSY;
+	ntb_netdev_maybe_stop_tx(ndev, q, tx_stop);
 
 	rc = ntb_transport_tx_enqueue(q->qp, skb, skb->data, skb->len);
-	if (rc) {
-		if (rc == -EAGAIN || rc == -EBUSY) {
-			netif_stop_subqueue(ndev, q->qid);
-			mod_timer(&q->tx_timer,
-				  jiffies + usecs_to_jiffies(tx_time));
-			return NETDEV_TX_BUSY;
-		}
-
-		goto drop;
-	}
+	if (rc)
+		goto err;
 
 	/* check for next submit */
 	ntb_netdev_maybe_stop_tx(ndev, q, tx_stop);
 
 	return NETDEV_TX_OK;
 
-drop:
-	dev_kfree_skb_any(skb);
-	DEV_STATS_INC(ndev, tx_dropped);
-	return NETDEV_TX_OK;
+err:
+	ndev->stats.tx_dropped++;
+	ndev->stats.tx_errors++;
+	return NETDEV_TX_BUSY;
 }
 
 static void ntb_netdev_tx_timer(struct timer_list *t)
@@ -659,14 +630,14 @@ static int ntb_netdev_probe(struct device *client_dev)
 	dev->client_dev = client_dev;
 	dev->num_queues = 0;
 
-	dev->queues = kzalloc_objs(*dev->queues, NTB_NETDEV_MAX_QUEUES);
+	dev->queues = kzalloc_objs(*dev->queues, NTB_NETDEV_MAX_QUEUES,
+				   GFP_KERNEL);
 	if (!dev->queues) {
 		rc = -ENOMEM;
 		goto err_free_netdev;
 	}
 
 	ndev->features = NETIF_F_HIGHDMA;
-	ndev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 
 	ndev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 

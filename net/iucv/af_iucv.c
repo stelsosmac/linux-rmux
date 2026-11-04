@@ -26,7 +26,6 @@
 #include <linux/init.h>
 #include <linux/poll.h>
 #include <linux/security.h>
-#include <linux/uio.h>
 #include <net/sock.h>
 #include <asm/machine.h>
 #include <asm/ebcdic.h>
@@ -210,6 +209,12 @@ static int afiucv_hs_send(struct iucv_message *imsg, struct sock *sock,
 	phs_hdr->flags = flags;
 	if (flags == AF_IUCV_FLAG_SYN)
 		phs_hdr->window = iucv->msglimit;
+	else if ((flags == AF_IUCV_FLAG_WIN) || !flags) {
+		confirm_recv = atomic_read(&iucv->msg_recv);
+		phs_hdr->window = confirm_recv;
+		if (confirm_recv)
+			phs_hdr->flags = phs_hdr->flags | AF_IUCV_FLAG_WIN;
+	}
 	memcpy(phs_hdr->destUserID, iucv->dst_user_id, 8);
 	memcpy(phs_hdr->destAppName, iucv->dst_name, 8);
 	memcpy(phs_hdr->srcUserID, iucv->src_user_id, 8);
@@ -244,22 +249,13 @@ static int afiucv_hs_send(struct iucv_message *imsg, struct sock *sock,
 	}
 	skb->protocol = cpu_to_be16(ETH_P_AF_IUCV);
 
-	/* Claim the receive credit here, not while building the header: every
-	 * way this frame can be dropped has now been ruled out, so the window
-	 * is zeroed only for as long as the transmit itself takes.
-	 */
-	if (flags == AF_IUCV_FLAG_WIN || !flags) {
-		confirm_recv = atomic_xchg(&iucv->msg_recv, 0);
-		phs_hdr->window = confirm_recv;
-		if (confirm_recv)
-			phs_hdr->flags = phs_hdr->flags | AF_IUCV_FLAG_WIN;
-	}
-
 	atomic_inc(&iucv->skbs_in_xmit);
 	err = dev_queue_xmit(skb);
 	if (net_xmit_eval(err)) {
 		atomic_dec(&iucv->skbs_in_xmit);
-		atomic_add(confirm_recv, &iucv->msg_recv);
+	} else {
+		atomic_sub(confirm_recv, &iucv->msg_recv);
+		WARN_ON(atomic_read(&iucv->msg_recv) < 0);
 	}
 	return net_xmit_eval(err);
 
@@ -1244,7 +1240,6 @@ static int iucv_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 	struct iucv_sock *iucv = iucv_sk(sk);
 	unsigned int copied, rlen;
 	struct sk_buff *skb, *rskb, *cskb;
-	bool send_win = false;
 	int err = 0;
 	u32 offset;
 
@@ -1335,20 +1330,16 @@ static int iucv_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 		if (skb_queue_empty(&iucv->backlog_skb_q)) {
 			if (!list_empty(&iucv->message_q.list))
 				iucv_process_message_q(sk);
-			if (iucv->transport == AF_IUCV_TRANS_HIPER &&
-			    atomic_read(&iucv->msg_recv) >=
-							iucv->msglimit / 2)
-				send_win = true;
-		}
-		spin_unlock_bh(&iucv->message_q.lock);
-
-		if (send_win) {
-			err = iucv_send_ctrl(sk, AF_IUCV_FLAG_WIN);
-			if (err) {
-				sk->sk_state = IUCV_DISCONN;
-				sk->sk_state_change(sk);
+			if (atomic_read(&iucv->msg_recv) >=
+							iucv->msglimit / 2) {
+				err = iucv_send_ctrl(sk, AF_IUCV_FLAG_WIN);
+				if (err) {
+					sk->sk_state = IUCV_DISCONN;
+					sk->sk_state_change(sk);
+				}
 			}
 		}
+		spin_unlock_bh(&iucv->message_q.lock);
 	}
 
 done:
@@ -1558,7 +1549,7 @@ static int iucv_sock_setsockopt(struct socket *sock, int level, int optname,
 }
 
 static int iucv_sock_getsockopt(struct socket *sock, int level, int optname,
-				sockopt_t *opt)
+				char __user *optval, int __user *optlen)
 {
 	struct sock *sk = sock->sk;
 	struct iucv_sock *iucv = iucv_sk(sk);
@@ -1568,7 +1559,9 @@ static int iucv_sock_getsockopt(struct socket *sock, int level, int optname,
 	if (level != SOL_IUCV)
 		return -ENOPROTOOPT;
 
-	len = opt->optlen;
+	if (get_user(len, optlen))
+		return -EFAULT;
+
 	if (len < 0)
 		return -EINVAL;
 
@@ -1603,8 +1596,9 @@ static int iucv_sock_getsockopt(struct socket *sock, int level, int optname,
 	if (rc)
 		return rc;
 
-	opt->optlen = len;
-	if (copy_to_iter(&val, len, &opt->iter_out) != len)
+	if (put_user(len, optlen))
+		return -EFAULT;
+	if (copy_to_user(optval, &val, len))
 		return -EFAULT;
 
 	return 0;
@@ -2087,8 +2081,6 @@ static int afiucv_hs_rcv(struct sk_buff *skb, struct net_device *dev,
 	sk = NULL;
 	read_lock(&iucv_sk_list.lock);
 	sk_for_each(sk, &iucv_sk_list.head) {
-		if (iucv_sk(sk)->hs_dev != dev)
-			continue;
 		if (trans_hdr->flags == AF_IUCV_FLAG_SYN) {
 			if ((!memcmp(&iucv_sk(sk)->src_name,
 				     trans_hdr->destAppName, 8)) &&
@@ -2263,7 +2255,7 @@ static const struct proto_ops iucv_sock_ops = {
 	.socketpair	= sock_no_socketpair,
 	.shutdown	= iucv_sock_shutdown,
 	.setsockopt	= iucv_sock_setsockopt,
-	.getsockopt_iter = iucv_sock_getsockopt,
+	.getsockopt	= iucv_sock_getsockopt,
 };
 
 static int iucv_sock_create(struct net *net, struct socket *sock, int protocol,

@@ -83,7 +83,11 @@ static int ets_quantum_parse(struct Qdisc *sch, const struct nlattr *attr,
 			     unsigned int *quantum,
 			     struct netlink_ext_ack *extack)
 {
-	*quantum = clamp_t(u32, nla_get_u32(attr), 256, 1 << 20);
+	*quantum = nla_get_u32(attr);
+	if (!*quantum) {
+		NL_SET_ERR_MSG(extack, "ETS quantum cannot be zero");
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -243,7 +247,9 @@ static int ets_class_change(struct Qdisc *sch, u32 classid, u32 parentid,
 	if (err)
 		return err;
 
-	WRITE_ONCE(cl->quantum, quantum);
+	sch_tree_lock(sch);
+	cl->quantum = quantum;
+	sch_tree_unlock(sch);
 
 	ets_offload_change(sch);
 	return 0;
@@ -314,7 +320,7 @@ static int ets_class_dump(struct Qdisc *sch, unsigned long arg,
 	if (!nest)
 		goto nla_put_failure;
 	if (!ets_class_is_strict(q, cl)) {
-		if (nla_put_u32(skb, TCA_ETS_QUANTA_BAND, READ_ONCE(cl->quantum)))
+		if (nla_put_u32(skb, TCA_ETS_QUANTA_BAND, cl->quantum))
 			goto nla_put_failure;
 	}
 	return nla_nest_end(skb, nest);
@@ -439,10 +445,10 @@ static int ets_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 	if (!cl_is_active(cl) && !ets_class_is_strict(q, cl)) {
 		list_add_tail(&cl->alist, &q->active);
-		cl->deficit = READ_ONCE(cl->quantum);
+		cl->deficit = cl->quantum;
 	}
 
-	qstats_backlog_add(sch, len);
+	sch->qstats.backlog += len;
 	qdisc_qlen_inc(sch);
 	return err;
 }
@@ -493,7 +499,7 @@ static struct sk_buff *ets_qdisc_dequeue(struct Qdisc *sch)
 			return ets_qdisc_dequeue_skb(sch, skb);
 		}
 
-		cl->deficit += READ_ONCE(cl->quantum);
+		cl->deficit += cl->quantum;
 		list_move_tail(&cl->alist, &q->active);
 	}
 out:
@@ -628,13 +634,11 @@ static int ets_qdisc_change(struct Qdisc *sch, struct nlattr *opt,
 			return err;
 	}
 	/* If there are more bands than strict + quanta provided, the remaining
-	 * ones are ETS with quantum of max(MTU, 256). Initialize the missing
-	 * values here.
+	 * ones are ETS with quantum of MTU. Initialize the missing values here.
 	 */
 	for (i = nstrict; i < nbands; i++) {
 		if (!quanta[i])
-			quanta[i] = clamp_t(u32, (u32)psched_mtu(qdisc_dev(sch)),
-					    256, 1 << 20);
+			quanta[i] = psched_mtu(qdisc_dev(sch));
 	}
 
 	/* Before commit, make sure we can allocate all new qdiscs */

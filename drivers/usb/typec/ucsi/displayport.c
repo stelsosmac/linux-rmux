@@ -71,14 +71,11 @@ static int ucsi_displayport_enter(struct typec_altmode *alt, u32 *vdo)
 	if (ret < 0) {
 		if (ucsi->version > 0x0100)
 			goto err_unlock;
+		cur = 0xff;
 	}
 
 	if (cur != 0xff) {
-		if (cur < UCSI_MAX_ALTMODES)
-			ret = dp->con->port_altmode[cur] == alt ? 0 : -EBUSY;
-		else
-			ret = -EINVAL;
-
+		ret = dp->con->port_altmode[cur] == alt ? 0 : -EBUSY;
 		goto err_unlock;
 	}
 

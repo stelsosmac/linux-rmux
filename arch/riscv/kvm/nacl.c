@@ -20,7 +20,7 @@ void __kvm_riscv_nacl_hfence(void *shmem,
 			     unsigned long page_count)
 {
 	int i, ent = -1, try_count = 5;
-	__lelong *entp;
+	unsigned long *entp;
 
 again:
 	for (i = 0; i < SBI_NACL_SHMEM_HFENCE_ENTRY_MAX; i++) {
@@ -33,7 +33,7 @@ again:
 	}
 
 	if (ent < 0) {
-		if (try_count--) {
+		if (try_count) {
 			nacl_sync_hfence(-1UL);
 			goto again;
 		} else {
@@ -42,24 +42,12 @@ again:
 		}
 	}
 
-	/*
-	 * Per SBI v3.0 section 15.1.2, the Page_Number and Page_Count
-	 * words must be updated before the Config word with its Pending
-	 * bit set. WRITE_ONCE() stops the compiler from reordering the
-	 * stores and smp_wmb() makes the parameter words globally
-	 * visible to the SBI implementation (or NACL hardware) before
-	 * the Pending bit is set.
-	 */
-	entp = shmem + SBI_NACL_SHMEM_HFENCE_ENTRY_PNUM(i);
-	WRITE_ONCE(*entp, cpu_to_lelong(page_num));
-	entp = shmem + SBI_NACL_SHMEM_HFENCE_ENTRY_PCOUNT(i);
-	WRITE_ONCE(*entp, cpu_to_lelong(page_count));
-
-	/* Ensure the parameter words are visible before the Pending bit */
-	smp_wmb();
-
 	entp = shmem + SBI_NACL_SHMEM_HFENCE_ENTRY_CONFIG(i);
-	WRITE_ONCE(*entp, cpu_to_lelong(control));
+	*entp = cpu_to_lelong(control);
+	entp = shmem + SBI_NACL_SHMEM_HFENCE_ENTRY_PNUM(i);
+	*entp = cpu_to_lelong(page_num);
+	entp = shmem + SBI_NACL_SHMEM_HFENCE_ENTRY_PCOUNT(i);
+	*entp = cpu_to_lelong(page_count);
 }
 
 int kvm_riscv_nacl_enable(void)

@@ -115,12 +115,8 @@ static int arizona_gpio_direction_out(struct gpio_chip *chip,
 	if (value)
 		value = ARIZONA_GPN_LVL;
 
-	ret = regmap_update_bits(arizona->regmap, ARIZONA_GPIO1_CTRL + offset,
-				 ARIZONA_GPN_DIR | ARIZONA_GPN_LVL, value);
-	if (ret < 0 && (val & ARIZONA_GPN_DIR) && persistent)
-		pm_runtime_put_autosuspend(chip->parent);
-
-	return ret;
+	return regmap_update_bits(arizona->regmap, ARIZONA_GPIO1_CTRL + offset,
+				  ARIZONA_GPN_DIR | ARIZONA_GPN_LVL, value);
 }
 
 static int arizona_gpio_set(struct gpio_chip *chip, unsigned int offset,

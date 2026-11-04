@@ -565,6 +565,8 @@ __cold bool io_uring_try_cancel_requests(struct io_ring_ctx *ctx,
 	mutex_unlock(&ctx->uring_lock);
 	if (tctx)
 		ret |= io_run_task_work() > 0;
+	else
+		ret |= flush_delayed_work(&ctx->fallback_work);
 	return ret;
 }
 
@@ -634,11 +636,12 @@ __cold void io_uring_cancel_generic(bool cancel_all, struct io_sq_data *sqd)
 		prepare_to_wait(&tctx->wait, &wait, TASK_INTERRUPTIBLE);
 		io_run_task_work();
 		io_uring_drop_tctx_refs(current);
-		/* only skip the sleep for local work this task may run */
 		xa_for_each(&tctx->xa, index, node) {
-			if (io_local_work_pending(node->ctx) &&
-			    io_allowed_defer_tw_run(node->ctx))
+			if (io_local_work_pending(node->ctx)) {
+				WARN_ON_ONCE(node->ctx->submitter_task &&
+					     node->ctx->submitter_task != current);
 				goto end_wait;
+			}
 		}
 		/*
 		 * If we've seen completions, retry without waiting. This
@@ -659,6 +662,6 @@ end_wait:
 		 */
 		atomic_dec(&tctx->in_cancel);
 		/* for exec all current's requests should be gone, kill tctx */
-		io_uring_free_tctx(current);
+		__io_uring_free(current);
 	}
 }

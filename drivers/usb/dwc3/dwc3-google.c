@@ -104,8 +104,9 @@ static int dwc3_google_set_pmu_state(struct dwc3_google *google, int state)
 	regmap_read(google->usb_cfg_regmap,
 		    google->host_cfg_offset + HOST_CFG1_OFFSET, &reg);
 
-	FIELD_MODIFY(HOST_CFG1_PM_POWER_STATE_REQUEST, &reg, state);
-	reg |= HOST_CFG1_PME_EN;
+	reg &= ~HOST_CFG1_PM_POWER_STATE_REQUEST;
+	reg |= (FIELD_PREP(HOST_CFG1_PM_POWER_STATE_REQUEST, state) |
+		HOST_CFG1_PME_EN);
 	regmap_write(google->usb_cfg_regmap,
 		     google->host_cfg_offset + HOST_CFG1_OFFSET, reg);
 
@@ -442,7 +443,6 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	probe_data.dwc = &google->dwc;
 	probe_data.res = res;
 	probe_data.ignore_clocks_and_resets = true;
-	probe_data.properties = DWC3_DEFAULT_PROPERTIES;
 	ret = dwc3_core_probe(&probe_data);
 	if (ret)  {
 		ret = dev_err_probe(dev, ret, "failed to register DWC3 Core\n");

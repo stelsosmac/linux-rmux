@@ -22,7 +22,6 @@
 #include "smb2glob.h"
 #include "smb2proto.h"
 #include "cached_dir.h"
-#include "reparse.h"
 #include "../common/smb2status.h"
 #include "../common/smbfsctl.h"
 
@@ -41,11 +40,9 @@ static struct reparse_data_buffer *reparse_buf_ptr(struct kvec *iov)
 
 	buf = (struct reparse_data_buffer *)((u8 *)io + off);
 	len = sizeof(*buf);
-	if (count < len)
-		return ERR_PTR(smb_EIO2(smb_eio_trace_reparse_rdlen, count, 0));
-
 	rdlen = le16_to_cpu(buf->ReparseDataLength);
-	if (count < rdlen + len)
+
+	if (count < len || count < rdlen + len)
 		return ERR_PTR(smb_EIO2(smb_eio_trace_reparse_rdlen, count, rdlen));
 	return buf;
 }
@@ -77,17 +74,6 @@ static int parse_posix_sids(struct cifs_open_info_data *data,
 
 	sidsbuf = (u8 *)qi + le16_to_cpu(qi->OutputBufferOffset) + qi_len;
 	sidsbuf_end = sidsbuf + out_len - qi_len;
-	if (sidsbuf_end < sidsbuf) {
-		cifs_dbg(VFS, "%s: server-supplied out_len %u caused pointer wraparound\n",
-			 __func__, out_len);
-		return -EINVAL;
-	}
-	if (sidsbuf_end > (u8 *)rsp_iov->iov_base + rsp_iov->iov_len) {
-		cifs_dbg(VFS, "%s: server-supplied out_len %u overruns iov by %td bytes\n",
-			 __func__, out_len,
-			 sidsbuf_end - ((u8 *)rsp_iov->iov_base + rsp_iov->iov_len));
-		return -EINVAL;
-	}
 
 	owner_len = posix_info_sid_size(sidsbuf, sidsbuf_end);
 	if (owner_len == -1)
@@ -248,7 +234,7 @@ replay_again:
 	num_rqst = 0;
 	server = cifs_pick_channel(ses);
 
-	vars = kzalloc_obj(*vars);
+	vars = kzalloc_obj(*vars, GFP_KERNEL);
 	if (vars == NULL) {
 		rc = -ENOMEM;
 		goto out;
@@ -588,20 +574,16 @@ finished:
 		idata->fi.Attributes = create_rsp->FileAttributes;
 		idata->fi.AllocationSize = create_rsp->AllocationSize;
 		idata->fi.EndOfFile = create_rsp->EndofFile;
-		idata->contains_posix_file_info = false;
 		if (le32_to_cpu(idata->fi.NumberOfLinks) == 0)
 			idata->fi.NumberOfLinks = cpu_to_le32(1); /* dummy value */
-		idata->unknown_nlink = true;
 		idata->fi.DeletePending = 0; /* successful open = not delete pending */
 		idata->fi.Directory = !!(le32_to_cpu(create_rsp->FileAttributes) & ATTR_DIRECTORY);
 
 		/* smb2_parse_contexts() fills idata->fi.IndexNumber */
 		rc = smb2_parse_contexts(server, &rsp_iov[0], &oparms->fid->epoch,
 					 oparms->fid->lease_key, &oplock, &idata->fi, NULL);
-		if (rc) {
+		if (rc)
 			cifs_dbg(VFS, "rc: %d parsing context of compound op\n", rc);
-			tmp_rc = rc;
-		}
 	}
 
 	for (i = 0; i < num_cmds; i++) {
@@ -614,6 +596,7 @@ finished:
 		switch (cmds[i]) {
 		case SMB2_OP_QUERY_INFO:
 			idata = in_iov[i].iov_base;
+			idata->contains_posix_file_info = false;
 			if (rc == 0 && cfile && cfile->symlink_target) {
 				idata->symlink_target = kstrdup(cfile->symlink_target, GFP_KERNEL);
 				if (!idata->symlink_target)
@@ -626,8 +609,6 @@ finished:
 					le16_to_cpu(qi_rsp->OutputBufferOffset),
 					le32_to_cpu(qi_rsp->OutputBufferLength),
 					&rsp_iov[i + 1], sizeof(idata->fi), (char *)&idata->fi);
-				if (!rc)
-					idata->contains_posix_file_info = false;
 			}
 			SMB2_query_info_free(&rqst[num_rqst++]);
 			if (rc)
@@ -639,6 +620,7 @@ finished:
 			break;
 		case SMB2_OP_POSIX_QUERY_INFO:
 			idata = in_iov[i].iov_base;
+			idata->contains_posix_file_info = true;
 			if (rc == 0 && cfile && cfile->symlink_target) {
 				idata->symlink_target = kstrdup(cfile->symlink_target, GFP_KERNEL);
 				if (!idata->symlink_target)
@@ -652,8 +634,6 @@ finished:
 					le32_to_cpu(qi_rsp->OutputBufferLength),
 					&rsp_iov[i + 1], sizeof(idata->posix_fi) /* add SIDs */,
 					(char *)&idata->posix_fi);
-				if (!rc)
-					idata->contains_posix_file_info = true;
 			}
 			if (rc == 0)
 				rc = parse_posix_sids(idata, &rsp_iov[i + 1]);
@@ -725,6 +705,7 @@ finished:
 				idata = in_iov[i].iov_base;
 				idata->reparse.io.iov = *iov;
 				idata->reparse.io.buftype = resp_buftype[i + 1];
+				idata->contains_posix_file_info = false; /* BB VERIFY */
 				rbuf = reparse_buf_ptr(iov);
 				if (IS_ERR(rbuf)) {
 					rc = PTR_ERR(rbuf);
@@ -746,6 +727,7 @@ finished:
 		case SMB2_OP_QUERY_WSL_EA:
 			if (!rc) {
 				idata = in_iov[i].iov_base;
+				idata->contains_posix_file_info = false;
 				qi_rsp = rsp_iov[i + 1].iov_base;
 				data[0] = (u8 *)qi_rsp + le16_to_cpu(qi_rsp->OutputBufferOffset);
 				size[0] = le32_to_cpu(qi_rsp->OutputBufferLength);
@@ -1018,13 +1000,12 @@ int smb2_query_path_info(const unsigned int xid,
 		/*
 		 * If the symlink was already parsed in create response then it is needed to fix
 		 * its type now (after the second call with OPEN_REPARSE_POINT which filled the
-		 * metadata attributes). If the symlink was not parsed in create response then
+		 * data->fi.Attributes). If the symlink was not parsed in create response then
 		 * the data->symlink_target was not filled yet and then the type will be fixed
 		 * later after data->symlink_target is filled.
 		 */
 		if (data->reparse.tag == IO_REPARSE_TAG_SYMLINK && !rc && data->symlink_target) {
-			bool directory = cifs_open_data_attrs(data) & ATTR_DIRECTORY;
-
+			bool directory = le32_to_cpu(data->fi.Attributes) & ATTR_DIRECTORY;
 			rc = smb2_fix_symlink_target_type(&data->symlink_target, directory, cifs_sb);
 		}
 		break;
@@ -1123,7 +1104,7 @@ smb2_unlink(const unsigned int xid, struct cifs_tcon *tcon, const char *name,
 	struct kvec close_iov;
 	int resp_buftype[2];
 	struct cifs_fid fid;
-	int flags = CIFS_CP_CREATE_CLOSE_OP;
+	int flags = 0;
 	__u8 oplock;
 	int rc;
 

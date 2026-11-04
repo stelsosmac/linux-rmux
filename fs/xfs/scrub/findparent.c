@@ -65,7 +65,7 @@ struct xrep_findparent_info {
 
 	/*
 	 * Scrub context.  We're looking for a @dp containing a directory
-	 * entry pointing to I_INO(sc->ip).
+	 * entry pointing to sc->ip->i_ino.
 	 */
 	struct xfs_scrub	*sc;
 
@@ -106,7 +106,7 @@ xrep_findparent_dirent(
 	if (xchk_should_terminate(fpi->sc, &error))
 		return error;
 
-	if (ino != I_INO(fpi->sc->ip))
+	if (ino != fpi->sc->ip->i_ino)
 		return 0;
 
 	/* Ignore garbage directory entry names. */
@@ -123,48 +123,20 @@ xrep_findparent_dirent(
 
 	/* Uhoh, more than one parent for a dir? */
 	if (fpi->found_parent != NULLFSINO &&
-	    !(fpi->parent_tentative && fpi->found_parent == I_INO(fpi->dp))) {
+	    !(fpi->parent_tentative && fpi->found_parent == fpi->dp->i_ino)) {
 		trace_xrep_findparent_dirent(fpi->sc->ip, 0);
 		return -EFSCORRUPTED;
 	}
 
 	/* We found a potential parent; remember this. */
-	trace_xrep_findparent_dirent(fpi->sc->ip, I_INO(fpi->dp));
-	fpi->found_parent = I_INO(fpi->dp);
+	trace_xrep_findparent_dirent(fpi->sc->ip, fpi->dp->i_ino);
+	fpi->found_parent = fpi->dp->i_ino;
 	fpi->parent_tentative = false;
 
 	if (fpi->parent_scan)
-		xrep_findparent_scan_found(fpi->parent_scan, I_INO(fpi->dp));
+		xrep_findparent_scan_found(fpi->parent_scan, fpi->dp->i_ino);
 
 	return 0;
-}
-
-static inline bool
-xrep_findparent_want_scan_file(
-	const struct xrep_findparent_info	*fpi)
-{
-	const struct xfs_scrub			*sc = fpi->sc;
-	const struct xfs_inode			*dp = fpi->dp;
-
-	/* Only directories can be parents */
-	if (!S_ISDIR(VFS_IC(dp)->i_mode))
-		return false;
-
-	/*
-	 * The inode being scanned cannot be its own parent, nor can any
-	 * temporary directory we created to stage this repair.
-	 */
-	if (dp == sc->ip || dp == sc->tempip)
-		return false;
-
-	/*
-	 * Similarly, temporary files created to stage a repair cannot be the
-	 * parent of this inode.
-	 */
-	if (xrep_is_tempfile(dp))
-		return false;
-
-	return true;
 }
 
 /*
@@ -172,7 +144,7 @@ xrep_findparent_want_scan_file(
  * scrub target inode.
  */
 STATIC int
-xrep_findparent_walk_file(
+xrep_findparent_walk_directory(
 	struct xrep_findparent_info	*fpi)
 {
 	struct xfs_scrub		*sc = fpi->sc;
@@ -180,11 +152,19 @@ xrep_findparent_walk_file(
 	unsigned int			lock_mode;
 	int				error = 0;
 
-	if (!xrep_findparent_want_scan_file(fpi)) {
-		if (fpi->parent_scan)
-			xchk_iscan_mark_visited(&fpi->parent_scan->iscan, dp);
+	/*
+	 * The inode being scanned cannot be its own parent, nor can any
+	 * temporary directory we created to stage this repair.
+	 */
+	if (dp == sc->ip || dp == sc->tempip)
 		return 0;
-	}
+
+	/*
+	 * Similarly, temporary files created to stage a repair cannot be the
+	 * parent of this inode.
+	 */
+	if (xrep_is_tempfile(dp))
+		return 0;
 
 	/*
 	 * Scan the directory to see if there it contains an entry pointing to
@@ -221,8 +201,6 @@ xrep_findparent_walk_file(
 		goto out_unlock;
 
 out_unlock:
-	if (fpi->parent_scan)
-		xchk_iscan_mark_visited(&fpi->parent_scan->iscan, dp);
 	xfs_iunlock(dp, lock_mode);
 	return error;
 }
@@ -249,12 +227,13 @@ xrep_findparent_live_update(
 	 * already scanned @p->dp, update the dotdot target inumber to the
 	 * parent inode.
 	 */
-	if (I_INO(p->ip) == I_INO(sc->ip) &&
-	    xchk_iscan_want_live_update(&pscan->iscan, I_INO(p->dp))) {
-		if (p->delta > 0)
-			xrep_findparent_scan_found(pscan, I_INO(p->dp));
-		else
+	if (p->ip->i_ino == sc->ip->i_ino &&
+	    xchk_iscan_want_live_update(&pscan->iscan, p->dp->i_ino)) {
+		if (p->delta > 0) {
+			xrep_findparent_scan_found(pscan, p->dp->i_ino);
+		} else {
 			xrep_findparent_scan_found(pscan, NULLFSINO);
+		}
 	}
 
 	return NOTIFY_DONE;
@@ -330,7 +309,11 @@ xrep_findparent_scan(
 	ASSERT(S_ISDIR(VFS_IC(sc->ip)->i_mode));
 
 	while ((ret = xchk_iscan_iter(&pscan->iscan, &fpi.dp)) == 1) {
-		ret = xrep_findparent_walk_file(&fpi);
+		if (S_ISDIR(VFS_I(fpi.dp)->i_mode))
+			ret = xrep_findparent_walk_directory(&fpi);
+		else
+			ret = 0;
+		xchk_iscan_mark_visited(&pscan->iscan, fpi.dp);
 		xchk_irele(sc, fpi.dp);
 		if (ret)
 			break;
@@ -405,7 +388,7 @@ xrep_findparent_confirm(
 	if (*parent_ino == NULLFSINO)
 	       return 0;
 	if (!xfs_verify_dir_ino(sc->mp, *parent_ino) ||
-	    *parent_ino == I_INO(sc->ip)) {
+	    *parent_ino == sc->ip->i_ino) {
 		*parent_ino = NULLFSINO;
 		return 0;
 	}
@@ -419,7 +402,7 @@ xrep_findparent_confirm(
 		goto out_rele;
 	}
 
-	error = xrep_findparent_walk_file(&fpi);
+	error = xrep_findparent_walk_directory(&fpi);
 	if (error)
 		goto out_rele;
 
@@ -439,10 +422,10 @@ xfs_ino_t
 xrep_findparent_self_reference(
 	struct xfs_scrub	*sc)
 {
-	if (I_INO(sc->ip) == sc->mp->m_sb.sb_rootino)
+	if (sc->ip->i_ino == sc->mp->m_sb.sb_rootino)
 		return sc->mp->m_sb.sb_rootino;
 
-	if (I_INO(sc->ip) == sc->mp->m_sb.sb_metadirino)
+	if (sc->ip->i_ino == sc->mp->m_sb.sb_metadirino)
 		return sc->mp->m_sb.sb_metadirino;
 
 	if (VFS_I(sc->ip)->i_nlink == 0)
@@ -473,12 +456,9 @@ xrep_findparent_from_dcache(
 	pip = igrab(d_inode(parent));
 	dput(parent);
 
-	if (!pip)
-		goto out_dput;
-
 	if (S_ISDIR(pip->i_mode)) {
-		ret = pip->i_ino;
-		trace_xrep_findparent_from_dcache(sc->ip, ret);
+		trace_xrep_findparent_from_dcache(sc->ip, XFS_I(pip)->i_ino);
+		ret = XFS_I(pip)->i_ino;
 	}
 
 	xchk_irele(sc, XFS_I(pip));

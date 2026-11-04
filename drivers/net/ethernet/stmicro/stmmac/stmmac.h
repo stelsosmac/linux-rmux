@@ -265,6 +265,8 @@ struct stmmac_priv {
 	u32 rx_coal_frames[MTL_MAX_RX_QUEUES];
 
 	int hwts_tx_en;
+	/* skb_shinfo(skb)->gso_type types that we handle */
+	unsigned int gso_enabled_types;
 	bool tx_path_in_lpi_mode;
 	bool sph_active;
 	bool sph_capable;
@@ -344,7 +346,7 @@ struct stmmac_priv {
 	void __iomem *ptpaddr;
 	void __iomem *estaddr;
 	unsigned long active_vlans[BITS_TO_LONGS(VLAN_N_VID)];
-	unsigned int num_svlans;
+	unsigned int num_double_vlans;
 	int sfty_irq;
 	struct stmmac_msi *msi;
 

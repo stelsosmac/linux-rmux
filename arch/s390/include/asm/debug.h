@@ -460,11 +460,7 @@ static int VNAME(var, active_entries)[EARLY_AREAS] __initdata
 #define __REGISTER_STATIC_DEBUG_INFO(var, name, pages, areas, view)	\
 static int __init VNAME(var, reg)(void)					\
 {									\
-	int rc;								\
-									\
-	rc = debug_register_static(&var, (pages), (areas));		\
-	if (rc)								\
-		return rc;						\
+	debug_register_static(&var, (pages), (areas));			\
 	debug_register_view(&var, (view));				\
 	return 0;							\
 }									\
@@ -494,10 +490,9 @@ arch_initcall(VNAME(var, reg))
 __DEFINE_STATIC_AREA(var);						\
 static debug_info_t __refdata var =					\
 	__DEBUG_INFO_INIT(var, (name), (buf_size));			\
-static debug_info_t __used __section(".s390dbf_info") *VNAME(var, info) = &var; \
 __REGISTER_STATIC_DEBUG_INFO(var, name, pages, nr_areas, view)
 
-int debug_register_static(debug_info_t *id, int pages_per_area, int nr_areas);
+void debug_register_static(debug_info_t *id, int pages_per_area, int nr_areas);
 
 #endif /* MODULE */
 

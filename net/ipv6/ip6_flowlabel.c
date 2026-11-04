@@ -461,21 +461,6 @@ done:
 	return NULL;
 }
 
-static bool fl_sock_at_lease_limit(const struct sock *sk)
-{
-	const struct ipv6_fl_socklist *sfl;
-	int count = 0;
-
-	rcu_read_lock();
-	for_each_sk_fl_rcu(sk, sfl) {
-		if (++count >= FL_MAX_PER_SOCK)
-			break;
-	}
-	rcu_read_unlock();
-
-	return count >= FL_MAX_PER_SOCK;
-}
-
 static int mem_check(struct sock *sk)
 {
 	const int unpriv_total_limit = FL_MAX_SIZE - (FL_MAX_SIZE / 4);
@@ -635,7 +620,7 @@ static int ipv6_flowlabel_get(struct sock *sk, struct in6_flowlabel_req *freq,
 	int err;
 
 	if (freq->flr_flags & IPV6_FL_F_REFLECT) {
-		if (READ_ONCE(net->ipv6.sysctl.flowlabel_consistency)) {
+		if (net->ipv6.sysctl.flowlabel_consistency) {
 			net_info_ratelimited("Can not set IPV6_FL_F_REFLECT if flowlabel_consistency sysctl is enable\n");
 			return -EPERM;
 		}
@@ -648,7 +633,7 @@ static int ipv6_flowlabel_get(struct sock *sk, struct in6_flowlabel_req *freq,
 
 	if (freq->flr_label & ~IPV6_FLOWLABEL_MASK)
 		return -EINVAL;
-	if (READ_ONCE(net->ipv6.sysctl.flowlabel_state_ranges) &&
+	if (net->ipv6.sysctl.flowlabel_state_ranges &&
 	    (freq->flr_label & IPV6_FLOWLABEL_STATELESS_FLAG))
 		return -ERANGE;
 
@@ -693,10 +678,6 @@ recheck:
 
 			err = -ENOMEM;
 			if (!sfl1)
-				goto release;
-			err = -ENOBUFS;
-			if (fl_sock_at_lease_limit(sk) &&
-			    !capable(CAP_NET_ADMIN))
 				goto release;
 			if (fl->linger > fl1->linger)
 				fl1->linger = fl->linger;

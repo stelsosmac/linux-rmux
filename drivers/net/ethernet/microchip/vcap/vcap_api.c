@@ -2427,21 +2427,18 @@ struct vcap_rule *vcap_decode_rule(struct vcap_rule_internal *elem)
 
 	err = vcap_read_rule(ri);
 	if (err)
-		goto err_free_rule;
+		return ERR_PTR(err);
 
 	err = vcap_decode_keyset(ri);
 	if (err)
-		goto err_free_rule;
+		return ERR_PTR(err);
 
 	err = vcap_decode_actionset(ri);
 	if (err)
-		goto err_free_rule;
+		return ERR_PTR(err);
 
 out:
 	return &ri->data;
-err_free_rule:
-	vcap_free_rule(&ri->data);
-	return ERR_PTR(err);
 }
 
 struct vcap_rule *vcap_get_rule(struct vcap_control *vctrl, u32 id)
@@ -3527,8 +3524,8 @@ int vcap_filter_rule_keys(struct vcap_rule *rule,
 				if (key == keylist[idx]) {
 					list_del(&ckf->ctrl.list);
 					kfree(ckf);
+					idx++;
 					err = 0;
-					break;
 				}
 		}
 	}

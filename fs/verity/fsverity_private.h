@@ -11,7 +11,6 @@
 #define pr_fmt(fmt) "fs-verity: " fmt
 
 #include <linux/fsverity.h>
-#include <linux/rcupdate.h>
 #include <linux/rhashtable.h>
 
 /*
@@ -54,9 +53,6 @@ struct merkle_tree_params {
 	u64 tree_size;			/* Merkle tree size in bytes */
 	unsigned long tree_pages;	/* Merkle tree size in pages */
 
-	/* the hash of an all-zeroes block */
-	u8 zero_digest[FS_VERITY_MAX_DIGEST_SIZE];
-
 	/*
 	 * Starting block index for each tree level, ordered from leaf level (0)
 	 * to root level ('num_levels - 1')
@@ -77,19 +73,7 @@ struct merkle_tree_params {
 struct fsverity_info {
 	struct rhash_head rhash_head;
 	struct merkle_tree_params tree_params;
-	union {
-		u8 root_hash[FS_VERITY_MAX_DIGEST_SIZE];
-
-		/*
-		 * Used for final freeing of the struct, in which case root_hash
-		 * is no longer needed.  Specifically, the only fields needed
-		 * besides the rcu_head are those needed by fsverity_free_info()
-		 * itself, and those that can be accessed by fsverity_get_info()
-		 * (rhash_head and inode) during the RCU-protected rhashtable
-		 * chain search trying to find another inode's fsverity_info.
-		 */
-		struct rcu_head rcu_head;
-	};
+	u8 root_hash[FS_VERITY_MAX_DIGEST_SIZE];
 	u8 file_digest[FS_VERITY_MAX_DIGEST_SIZE];
 	struct inode *inode;
 	unsigned long *hash_block_verified;

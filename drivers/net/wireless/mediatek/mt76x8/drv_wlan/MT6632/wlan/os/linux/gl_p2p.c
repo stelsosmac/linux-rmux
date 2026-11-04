@@ -128,22 +128,17 @@ struct net_device *gPrP2pDev[KAL_P2P_NUM];
 
 #if CFG_ENABLE_WIFI_DIRECT_CFG_80211
 
-/* Wrapper for set_wiphy_params to match expected signature */
 static int mtk_p2p_cfg80211_set_wiphy_params_adapter(struct wiphy *wiphy, int param, u32 val)
 {
-	/* Original: int mtk_p2p_cfg80211_set_wiphy_params(struct wiphy *, u32) */
 	return mtk_p2p_cfg80211_set_wiphy_params(wiphy, val);
 }
 
-/* Wrapper for set_tx_power to match expected signature */
 static int mtk_p2p_cfg80211_set_txpower_adapter(struct wiphy *wiphy, struct wireless_dev *wdev,
 	int ifindex, enum nl80211_tx_power_setting type, int dbm)
 {
-	/* Original: int mtk_p2p_cfg80211_set_txpower(struct wiphy *, struct wireless_dev *, enum nl80211_tx_power_setting, int) */
 	return mtk_p2p_cfg80211_set_txpower(wiphy, wdev, type, dbm);
 }
 
-/* Wrapper for get_tx_power to match expected signature */
 static int mtk_p2p_cfg80211_get_txpower_adapter(struct wiphy *wiphy, struct wireless_dev *wdev,
 	int ifindex, unsigned int dbm, int *type)
 {
@@ -159,9 +154,9 @@ static struct cfg80211_ops mtk_p2p_ops = {
 	.del_virtual_intf = mtk_p2p_cfg80211_del_iface,
 	.change_bss = mtk_p2p_cfg80211_change_bss,
 	.scan = mtk_p2p_cfg80211_scan,
-	.remain_on_channel = mtk_p2p_cfg80211_remain_on_channel_v73,
+	.remain_on_channel = mtk_p2p_cfg80211_remain_on_channel,
 	.cancel_remain_on_channel = mtk_p2p_cfg80211_cancel_remain_on_channel,
-	.mgmt_tx = mtk_p2p_cfg80211_mgmt_tx_v73,
+	.mgmt_tx = mtk_p2p_cfg80211_mgmt_tx,
 	.mgmt_tx_cancel_wait = mtk_p2p_cfg80211_mgmt_tx_cancel_wait,
 	.connect = mtk_p2p_cfg80211_connect,
 	.disconnect = mtk_p2p_cfg80211_disconnect,

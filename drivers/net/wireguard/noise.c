@@ -784,11 +784,10 @@ wg_noise_handshake_consume_response(struct message_handshake_response *src,
 
 	/* Success! Copy everything to peer */
 	down_write(&handshake->lock);
-	/* Check that the state is the same and that this is still the
-	 * initiation we started with, while we have an exclusive lock.
+	/* It's important to check that the state is still the same, while we
+	 * have an exclusive lock.
 	 */
-	if (handshake->state != state ||
-	    crypto_memneq(handshake->ephemeral_private, ephemeral_private, NOISE_PUBLIC_KEY_LEN)) {
+	if (handshake->state != state) {
 		up_write(&handshake->lock);
 		goto fail;
 	}

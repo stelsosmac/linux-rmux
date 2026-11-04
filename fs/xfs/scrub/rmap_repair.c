@@ -570,7 +570,7 @@ xrep_rmap_scan_ifork(
 	int			whichfork)
 {
 	struct xrep_rmap_ifork	rf = {
-		.accum		= { .rm_owner = I_INO(ip), },
+		.accum		= { .rm_owner = ip->i_ino, },
 		.rr		= rr,
 		.whichfork	= whichfork,
 	};
@@ -1109,7 +1109,6 @@ xrep_rmap_try_reserve(
 		return error;
 
 	error = xfs_agfl_walk(sc->mp, agf, agfl_bp, xrep_rmap_walk_agfl, &ra);
-	xfs_trans_brelse(sc->tp, agfl_bp);
 	if (error)
 		return error;
 

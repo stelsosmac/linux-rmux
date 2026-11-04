@@ -427,7 +427,7 @@ congestion_drop:
 		/* We know we have at least one packet in queue */
 		head = slot_dequeue_head(slot);
 		delta = qdisc_pkt_len(head) - qdisc_pkt_len(skb);
-		qstats_backlog_sub(sch, delta);
+		sch->qstats.backlog -= delta;
 		WRITE_ONCE(slot->backlog, slot->backlog - delta);
 		qdisc_drop_reason(head, sch, to_free, QDISC_DROP_FLOW_LIMIT);
 
@@ -660,11 +660,6 @@ static int sfq_change(struct Qdisc *sch, struct nlattr *opt,
 		return -EINVAL;
 	}
 
-	if (ctl->quantum > 1 << 20) {
-		NL_SET_ERR_MSG_MOD(extack, "quantum too large");
-		return -EINVAL;
-	}
-
 	if (ctl->perturb_period < 0 ||
 	    ctl->perturb_period > INT_MAX / HZ) {
 		NL_SET_ERR_MSG_MOD(extack, "invalid perturb period");
@@ -693,7 +688,7 @@ static int sfq_change(struct Qdisc *sch, struct nlattr *opt,
 
 	/* update and validate configuration */
 	if (ctl->quantum)
-		quantum = max(256U, ctl->quantum);
+		quantum = ctl->quantum;
 	if (ctl->flows)
 		maxflows = min_t(u32, ctl->flows, SFQ_MAX_FLOWS);
 	if (ctl->divisor) {
@@ -804,8 +799,7 @@ static int sfq_init(struct Qdisc *sch, struct nlattr *opt,
 	q->tail = NULL;
 	q->divisor = SFQ_DEFAULT_HASH_DIVISOR;
 	q->maxflows = SFQ_DEFAULT_FLOWS;
-	q->quantum = clamp_t(u32, psched_mtu(qdisc_dev(sch)),
-			     256, 1 << 20);
+	q->quantum = psched_mtu(qdisc_dev(sch));
 	q->perturb_period = 0;
 	get_random_bytes(&q->perturbation, sizeof(q->perturbation));
 

@@ -49,9 +49,9 @@
  * Defaults to an empty implementation. Can be replaced by architecture
  * specific code.
  *
- * Invoked from enter_from_user_mode() in the non-instrumentable section. Use
- * __always_inline so the compiler cannot push it out of line and make it
- * instrumentable.
+ * Invoked from syscall_enter_from_user_mode() in the non-instrumentable
+ * section. Use __always_inline so the compiler cannot push it out of line
+ * and make it instrumentable.
  */
 static __always_inline void arch_enter_from_user_mode(struct pt_regs *regs);
 
@@ -468,25 +468,6 @@ static inline void irqentry_exit_to_kernel_mode_preempt(struct pt_regs *regs,
 		irqentry_exit_cond_resched();
 }
 
-/*
- * The deferred hrtimer rearm is the tail of the timer interrupt, moved to the
- * interrupt return path so that it runs after a possible reschedule. By now
- * irq_exit_rcu() has left lockdep's hardirq context. Re-enter it for the
- * rearm, so that the hrtimer base lock and the timekeeping sequence count are
- * not chained onto the locks held by the interrupted context, which would add
- * new lock chains for every lock stack an interrupt hits.
- *
- * The rearm on return to user mode needs no such annotation: no locks are
- * held there, so it uses the same lock chains as the rearm in hardirq
- * context.
- */
-static __always_inline void irqentry_hrtimer_rearm_deferred(void)
-{
-	lockdep_hardirq_enter();
-	hrtimer_rearm_deferred();
-	lockdep_hardirq_exit();
-}
-
 /**
  * irqentry_exit_to_kernel_mode_after_preempt - Establish trace, lockdep and RCU state
  * @regs:	Pointer to current's pt_regs
@@ -510,7 +491,7 @@ irqentry_exit_to_kernel_mode_after_preempt(struct pt_regs *regs, irqentry_state_
 		 */
 		if (state.exit_rcu) {
 			instrumentation_begin();
-			irqentry_hrtimer_rearm_deferred();
+			hrtimer_rearm_deferred();
 			/* Tell the tracer that IRET will enable interrupts */
 			trace_hardirqs_on_prepare();
 			lockdep_hardirqs_on_prepare();
@@ -521,7 +502,7 @@ irqentry_exit_to_kernel_mode_after_preempt(struct pt_regs *regs, irqentry_state_
 		}
 
 		instrumentation_begin();
-		irqentry_hrtimer_rearm_deferred();
+		hrtimer_rearm_deferred();
 		/* Covers both tracing and lockdep */
 		trace_hardirqs_on();
 		instrumentation_end();

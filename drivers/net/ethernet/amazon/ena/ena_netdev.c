@@ -2303,7 +2303,11 @@ static int ena_open(struct net_device *netdev)
 		return rc;
 	}
 
-	return ena_up(adapter);
+	rc = ena_up(adapter);
+	if (rc)
+		return rc;
+
+	return rc;
 }
 
 /* ena_close - Disables a network interface
@@ -4122,8 +4126,6 @@ err_worker_destroy:
 err_device_destroy:
 	ena_com_delete_host_info(ena_dev);
 	ena_com_admin_destroy(ena_dev);
-	ena_phc_destroy(adapter);
-	ena_com_mmio_reg_read_request_destroy(ena_dev);
 ena_devlink_destroy:
 	ena_devlink_free(devlink);
 err_metrics_destroy:

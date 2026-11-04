@@ -7,7 +7,6 @@
 #include <linux/mod_devicetable.h>
 #include <asm/chpid.h>
 #include <asm/cio.h>
-#include <asm/dma-types.h>
 #include <asm/fcx.h>
 #include <asm/schid.h>
 #include <asm/tpi.h>
@@ -50,7 +49,7 @@ struct pmcw {
 
 /* Target SCHIB configuration. */
 struct schib_config {
-	dma64_t mba;
+	u64 mba;
 	u32 intparm;
 	u16 mbi;
 	u32 isc:3;
@@ -67,7 +66,7 @@ struct schib_config {
 struct schib {
 	struct pmcw pmcw;	 /* path management control word */
 	union scsw scsw;	 /* subchannel status word */
-	dma64_t mba;		 /* measurement block address */
+	__u64 mba;               /* measurement block address */
 	__u8 mda[4];		 /* model dependent area */
 } __attribute__ ((packed,aligned(4)));
 

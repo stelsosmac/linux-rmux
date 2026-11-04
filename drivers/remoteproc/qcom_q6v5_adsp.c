@@ -104,9 +104,8 @@ struct qcom_adsp {
 	struct completion stop_done;
 
 	phys_addr_t mem_phys;
-	unsigned long iova;
 	phys_addr_t mem_reloc;
-	void __iomem *mem_region;
+	void *mem_region;
 	size_t mem_size;
 	bool has_iommu;
 
@@ -319,7 +318,7 @@ static int adsp_load(struct rproc *rproc, const struct firmware *fw)
 	int ret;
 
 	ret = qcom_mdt_load_no_init(adsp->dev, fw, rproc->firmware,
-				    (__force void *)adsp->mem_region, adsp->mem_phys,
+				    adsp->mem_region, adsp->mem_phys,
 				    adsp->mem_size, &adsp->mem_reloc);
 	if (ret)
 		return ret;
@@ -334,7 +333,7 @@ static void adsp_unmap_carveout(struct rproc *rproc)
 	struct qcom_adsp *adsp = rproc->priv;
 
 	if (adsp->has_iommu)
-		iommu_unmap(rproc->domain, adsp->iova, adsp->mem_size);
+		iommu_unmap(rproc->domain, adsp->mem_phys, adsp->mem_size);
 }
 
 static int adsp_map_carveout(struct rproc *rproc)
@@ -342,6 +341,7 @@ static int adsp_map_carveout(struct rproc *rproc)
 	struct qcom_adsp *adsp = rproc->priv;
 	struct of_phandle_args args;
 	long long sid;
+	unsigned long iova;
 	int ret;
 
 	if (!adsp->has_iommu)
@@ -355,12 +355,11 @@ static int adsp_map_carveout(struct rproc *rproc)
 		return ret;
 
 	sid = args.args[0] & SID_MASK_DEFAULT;
-	of_node_put(args.np);
 
 	/* Add SID configuration for ADSP Firmware to SMMU */
-	adsp->iova = adsp->mem_phys | (sid << 32);
+	iova =  adsp->mem_phys | (sid << 32);
 
-	ret = iommu_map(rproc->domain, adsp->iova, adsp->mem_phys,
+	ret = iommu_map(rproc->domain, iova, adsp->mem_phys,
 			adsp->mem_size,	IOMMU_READ | IOMMU_WRITE,
 			GFP_KERNEL);
 	if (ret) {
@@ -492,7 +491,7 @@ static void *adsp_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iom
 	if (offset < 0 || offset + len > adsp->mem_size)
 		return NULL;
 
-	return (__force void *)adsp->mem_region + offset;
+	return adsp->mem_region + offset;
 }
 
 static int adsp_parse_firmware(struct rproc *rproc, const struct firmware *fw)

@@ -192,16 +192,12 @@ xrep_orphanage_create(
 	/* Make sure the orphanage is owned by root. */
 	error = xrep_chown_orphanage(sc, XFS_I(orphanage_inode));
 	if (error)
-		goto out_rele_orphanage;
+		goto out_dput_orphanage;
 
 	/* Stash the reference for later and bail out. */
 	sc->orphanage = XFS_I(orphanage_inode);
 	sc->orphanage_ilock_flags = 0;
-	orphanage_inode = NULL;
 
-out_rele_orphanage:
-	if (orphanage_inode)
-		xchk_irele(sc, XFS_I(orphanage_inode));
 out_dput_orphanage:
 	end_creating(orphanage_dentry);
 out_dput_root:
@@ -406,14 +402,14 @@ xrep_adoption_compute_name(
 	int			error = 0;
 
 	adopt->xname = xname;
-	xname->len = snprintf(namebuf, MAXNAMELEN, "%llu", I_INO(sc->ip));
+	xname->len = snprintf(namebuf, MAXNAMELEN, "%llu", sc->ip->i_ino);
 	xname->type = xfs_mode_to_ftype(VFS_I(sc->ip)->i_mode);
 
 	/* Make sure the filename is unique in the lost+found. */
 	error = xchk_dir_lookup(sc, sc->orphanage, xname, &ino);
 	while (error == 0 && incr < 10000) {
 		xname->len = snprintf(namebuf, MAXNAMELEN, "%llu.%u",
-				I_INO(sc->ip), ++incr);
+				sc->ip->i_ino, ++incr);
 		error = xchk_dir_lookup(sc, sc->orphanage, xname, &ino);
 	}
 	if (error == 0) {
@@ -536,7 +532,7 @@ xrep_adoption_move(
 	int			error;
 
 	trace_xrep_adoption_reparent(sc->orphanage, adopt->xname,
-			I_INO(sc->ip));
+			sc->ip->i_ino);
 
 	error = xrep_adoption_check_dcache(adopt);
 	if (error)
@@ -557,7 +553,7 @@ xrep_adoption_move(
 
 	/* Create the new name in the orphanage. */
 	error = xfs_dir_createname(sc->tp, sc->orphanage, adopt->xname,
-			I_INO(sc->ip), adopt->orphanage_blkres);
+			sc->ip->i_ino, adopt->orphanage_blkres);
 	if (error)
 		return error;
 
@@ -580,7 +576,7 @@ xrep_adoption_move(
 	/* Replace the dotdot entry if the child is a subdirectory. */
 	if (isdir) {
 		error = xfs_dir_replace(sc->tp, sc->ip, &xfs_name_dotdot,
-				I_INO(sc->orphanage), adopt->child_blkres);
+				sc->orphanage->i_ino, adopt->child_blkres);
 		if (error)
 			return error;
 	}

@@ -149,9 +149,8 @@ bpf_crypto_ctx_create(const struct bpf_crypto_params *params, u32 params__sz,
 	const struct bpf_crypto_type *type;
 	struct bpf_crypto_ctx *ctx;
 
-	if (!params ||
-	    params__sz != sizeof(struct bpf_crypto_params) ||
-	    params->reserved[0] || params->reserved[1]) {
+	if (!params || params->reserved[0] || params->reserved[1] ||
+	    params__sz != sizeof(struct bpf_crypto_params)) {
 		*err = -EINVAL;
 		return NULL;
 	}

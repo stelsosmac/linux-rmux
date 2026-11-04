@@ -149,9 +149,9 @@ int cifs_try_adding_channels(struct cifs_ses *ses)
 	int old_chan_count, new_chan_count;
 	int left;
 	int rc = 0;
-	int tries = 0, attempts;
+	int tries = 0;
 	size_t iface_weight = 0, iface_min_speed = 0;
-	struct cifs_server_iface *iface = NULL, *candidate = NULL;
+	struct cifs_server_iface *iface = NULL, *niface = NULL;
 	struct cifs_server_iface *last_iface = NULL;
 
 	spin_lock(&ses->chan_lock);
@@ -197,89 +197,67 @@ int cifs_try_adding_channels(struct cifs_ses *ses)
 			break;
 		}
 
+		if (!iface)
+			iface = list_first_entry(&ses->iface_list, struct cifs_server_iface,
+						 iface_head);
 		last_iface = list_last_entry(&ses->iface_list, struct cifs_server_iface,
 					     iface_head);
 		iface_min_speed = last_iface->speed;
-		spin_unlock(&ses->iface_lock);
 
-		attempts = 0;
-		while (left > 0) {
-			spin_lock(&ses->iface_lock);
+		list_for_each_entry_safe_from(iface, niface, &ses->iface_list,
+				    iface_head) {
+			/* do not mix rdma and non-rdma interfaces */
+			if (iface->rdma_capable != ses->server->rdma)
+				continue;
 
-			/*
-			 * iface_lock must be dropped while opening a channel,
-			 * and a concurrent interface refresh may remove and
-			 * free entries during that window, so no list entry
-			 * may be kept across it without a reference.  Scan
-			 * the list from the beginning each time and only pass
-			 * a referenced candidate to cifs_ses_add_channel();
-			 * weight_fulfilled tracks the progress so that no
-			 * iface is selected beyond its weight.
-			 */
-			candidate = NULL;
-			list_for_each_entry(iface, &ses->iface_list, iface_head) {
-				/* do not mix rdma and non-rdma interfaces */
-				if (iface->rdma_capable != ses->server->rdma)
-					continue;
+			/* skip ifaces that are unusable */
+			if (!iface->is_active ||
+			    (is_ses_using_iface(ses, iface) &&
+			     !iface->rss_capable))
+				continue;
 
-				/* skip ifaces that are unusable */
-				if (!iface->is_active ||
-				    (is_ses_using_iface(ses, iface) &&
-				     !iface->rss_capable))
-					continue;
+			/* check if we already allocated enough channels */
+			iface_weight = iface->speed / iface_min_speed;
 
-				/* check if we already allocated enough channels */
-				iface_weight = iface->speed / iface_min_speed;
+			if (iface->weight_fulfilled >= iface_weight)
+				continue;
 
-				if (iface->weight_fulfilled >= iface_weight)
-					continue;
-
-				/* take ref before unlock */
-				kref_get(&iface->refcount);
-				candidate = iface;
-				break;
-			}
-
-			if (!candidate) {
-				/* no usable iface. reset weight_fulfilled and start over */
-				list_for_each_entry(iface, &ses->iface_list, iface_head)
-					iface->weight_fulfilled = 0;
-				spin_unlock(&ses->iface_lock);
-				break;
-			}
-
-			attempts++;
-			if (attempts > 3 * ses->chan_max) {
-				kref_put(&candidate->refcount, release_iface);
-				spin_unlock(&ses->iface_lock);
-				break;
-			}
+			/* take ref before unlock */
+			kref_get(&iface->refcount);
 
 			spin_unlock(&ses->iface_lock);
-			rc = cifs_ses_add_channel(ses, candidate);
+			rc = cifs_ses_add_channel(ses, iface);
 			spin_lock(&ses->iface_lock);
 
 			if (rc) {
 				cifs_dbg(VFS, "failed to open extra channel on iface:%pIS rc=%d\n",
-					 &candidate->sockaddr,
+					 &iface->sockaddr,
 					 rc);
+				kref_put(&iface->refcount, release_iface);
 				/* failure to add chan should increase weight */
-				candidate->weight_fulfilled++;
-				kref_put(&candidate->refcount, release_iface);
-				spin_unlock(&ses->iface_lock);
+				iface->weight_fulfilled++;
 				continue;
 			}
 
-			candidate->num_channels++;
-			candidate->weight_fulfilled++;
+			iface->num_channels++;
+			iface->weight_fulfilled++;
 			cifs_info("successfully opened new channel on iface:%pIS\n",
-				 &candidate->sockaddr);
-			spin_unlock(&ses->iface_lock);
-
-			left--;
-			new_chan_count++;
+				 &iface->sockaddr);
 			break;
 		}
+
+		/* reached end of list. reset weight_fulfilled and start over */
+		if (list_entry_is_head(iface, &ses->iface_list, iface_head)) {
+			list_for_each_entry(iface, &ses->iface_list, iface_head)
+				iface->weight_fulfilled = 0;
+			spin_unlock(&ses->iface_lock);
+			iface = NULL;
+			continue;
+		}
+		spin_unlock(&ses->iface_lock);
+
+		left--;
+		new_chan_count++;
 	}
 
 	return new_chan_count - old_chan_count;

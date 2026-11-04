@@ -44,9 +44,7 @@ static int snd_seq_call_port_info_ioctl(struct snd_seq_client *client, unsigned 
 		return -EFAULT;
 	data->kernel = NULL;
 
-	scoped_guard(mutex, &client->ioctl_mutex) {
-		err = snd_seq_kernel_client_ctl(client->number, cmd, data);
-	}
+	err = snd_seq_kernel_client_ctl(client->number, cmd, data);
 	if (err < 0)
 		return err;
 

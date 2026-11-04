@@ -585,9 +585,7 @@ static int aspeed_adc_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(data->rst),
 				     "invalid or missing reset controller device tree entry");
 
-	ret = reset_control_deassert(data->rst);
-	if (ret)
-		return ret;
+	reset_control_deassert(data->rst);
 
 	ret = devm_add_action_or_reset(dev, aspeed_adc_reset_assert, data->rst);
 	if (ret)

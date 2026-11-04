@@ -117,7 +117,7 @@ static ssize_t imc_pmu_cpumask_get_attr(struct device *dev,
 		return 0;
 	}
 
-	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(active_mask));
+	return cpumap_print_to_pagebuf(true, buf, active_mask);
 }
 
 static DEVICE_ATTR(cpumask, S_IRUGO, imc_pmu_cpumask_get_attr, NULL);
@@ -421,6 +421,7 @@ static int ppc_nest_imc_cpu_offline(unsigned int cpu)
 static int ppc_nest_imc_cpu_online(unsigned int cpu)
 {
 	const struct cpumask *l_cpumask;
+	static struct cpumask tmp_mask;
 	int res;
 
 	/* Get the cpumask of this node */
@@ -430,7 +431,7 @@ static int ppc_nest_imc_cpu_online(unsigned int cpu)
 	 * If this is not the first online CPU on this node, then
 	 * just return.
 	 */
-	if (cpumask_intersects(l_cpumask, &nest_imc_cpumask))
+	if (cpumask_and(&tmp_mask, l_cpumask, &nest_imc_cpumask))
 		return 0;
 
 	/*
@@ -646,13 +647,14 @@ static bool is_core_imc_mem_inited(int cpu)
 static int ppc_core_imc_cpu_online(unsigned int cpu)
 {
 	const struct cpumask *l_cpumask;
+	static struct cpumask tmp_mask;
 	int ret = 0;
 
 	/* Get the cpumask for this core */
 	l_cpumask = cpu_sibling_mask(cpu);
 
 	/* If a cpu for this core is already set, then, don't do anything */
-	if (cpumask_intersects(l_cpumask, &core_imc_cpumask))
+	if (cpumask_and(&tmp_mask, l_cpumask, &core_imc_cpumask))
 		return 0;
 
 	if (!is_core_imc_mem_inited(cpu)) {
@@ -1023,7 +1025,10 @@ static int thread_imc_event_init(struct perf_event *event)
 
 static bool is_thread_imc_pmu(struct perf_event *event)
 {
-	return strstarts(event->pmu->name, "thread_imc");
+	if (!strncmp(event->pmu->name, "thread_imc", strlen("thread_imc")))
+		return true;
+
+	return false;
 }
 
 static __be64 *get_event_base_addr(struct perf_event *event)
@@ -1275,8 +1280,6 @@ static int trace_imc_prepare_sample(struct trace_imc_data *mem,
 				    struct perf_event_header *header,
 				    struct perf_event *event)
 {
-	u16 misc = 0;
-
 	/* Sanity checks for a valid record */
 	if (be64_to_cpu(READ_ONCE(mem->tb1)) > *prev_tb)
 		*prev_tb = be64_to_cpu(READ_ONCE(mem->tb1));
@@ -1291,19 +1294,23 @@ static int trace_imc_prepare_sample(struct trace_imc_data *mem,
 	data->ip =  be64_to_cpu(READ_ONCE(mem->ip));
 	data->period = event->hw.last_period;
 
+	header->type = PERF_RECORD_SAMPLE;
+	header->size = sizeof(*header) + event->header_size;
+	header->misc = 0;
+
 	if (cpu_has_feature(CPU_FTR_ARCH_31)) {
 		switch (IMC_TRACE_RECORD_VAL_HVPR(be64_to_cpu(READ_ONCE(mem->val)))) {
 		case 0:/* when MSR HV and PR not set in the trace-record */
-			misc |= PERF_RECORD_MISC_GUEST_KERNEL;
+			header->misc |= PERF_RECORD_MISC_GUEST_KERNEL;
 			break;
 		case 1: /* MSR HV is 0 and PR is 1 */
-			misc |= PERF_RECORD_MISC_GUEST_USER;
+			header->misc |= PERF_RECORD_MISC_GUEST_USER;
 			break;
 		case 2: /* MSR HV is 1 and PR is 0 */
-			misc |= PERF_RECORD_MISC_KERNEL;
+			header->misc |= PERF_RECORD_MISC_KERNEL;
 			break;
 		case 3: /* MSR HV is 1 and PR is 1 */
-			misc |= PERF_RECORD_MISC_USER;
+			header->misc |= PERF_RECORD_MISC_USER;
 			break;
 		default:
 			pr_info("IMC: Unable to set the flag based on MSR bits\n");
@@ -1311,14 +1318,11 @@ static int trace_imc_prepare_sample(struct trace_imc_data *mem,
 		}
 	} else {
 		if (is_kernel_addr(data->ip))
-			misc |= PERF_RECORD_MISC_KERNEL;
+			header->misc |= PERF_RECORD_MISC_KERNEL;
 		else
-			misc |= PERF_RECORD_MISC_USER;
+			header->misc |= PERF_RECORD_MISC_USER;
 	}
-	perf_event_header__init(header, data,
-				PERF_RECORD_SAMPLE, misc,
-				sizeof(*header) + event->header_size,
-				event);
+	perf_event_header__init_id(header, data, event);
 
 	return 0;
 }

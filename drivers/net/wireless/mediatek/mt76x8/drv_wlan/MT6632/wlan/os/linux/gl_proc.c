@@ -488,7 +488,7 @@ static ssize_t procCfgWrite(struct file *file, const char __user *buffer,
 
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= (count+1))
+	if (count < u4CopySize)
 		u4CopySize = count;
 	else
 		u4CopySize -= 1;
@@ -554,7 +554,7 @@ static ssize_t procDriverCmdWrite(struct file *file, const char __user *buffer,
 
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= (count+1))
+	if (count < u4CopySize)
 		u4CopySize = count;
 	else
 		u4CopySize -= 1;
@@ -586,7 +586,7 @@ static ssize_t procDbgLevelWrite(struct file *file, const char __user *buffer,
 	UINT_32 u4CopySize = sizeof(g_aucProcBuf);
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
+	if (count < u4CopySize)
 		u4CopySize = count;
 	else
 		u4CopySize -= 1;
@@ -1189,7 +1189,7 @@ static ssize_t procRoamWrite(struct file *file, const char __user *buffer,
 	UINT_32 u4CopySize = sizeof(g_aucProcBuf);
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
+	if (count < u4CopySize)
 		u4CopySize = count;
 	else
 		u4CopySize -= 1;
@@ -1268,7 +1268,7 @@ static ssize_t procCountryWrite(struct file *file, const char __user *buffer,
 	UINT_32 u4CopySize = sizeof(g_aucProcBuf);
 
 	kalMemSet(g_aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
+	if (count < u4CopySize)
 		u4CopySize = count;
 	else
 		u4CopySize -= 1;

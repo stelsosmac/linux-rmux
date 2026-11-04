@@ -11,6 +11,7 @@
 #include <linux/device.h>
 #include <linux/iio/iio.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/notifier.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
@@ -195,7 +196,7 @@ static int admv1013_read_raw(struct iio_dev *indio_dev,
 
 	switch (info) {
 	case IIO_CHAN_INFO_CALIBBIAS:
-		switch (chan->channel2) {
+		switch (chan->channel) {
 		case IIO_MOD_I:
 			addr = ADMV1013_REG_OFFSET_ADJUST_I;
 			break;
@@ -601,14 +602,11 @@ static int admv1013_probe(struct spi_device *spi)
 				     "failed to get the LO input clock\n");
 
 	st->nb.notifier_call = admv1013_freq_change;
-
-	ret = devm_mutex_init(dev, &st->lock);
-	if (ret)
-		return ret;
-
 	ret = devm_clk_notifier_register(dev, st->clkin, &st->nb);
 	if (ret)
 		return ret;
+
+	mutex_init(&st->lock);
 
 	ret = admv1013_init(st, vcm_uv);
 	if (ret)
@@ -622,7 +620,7 @@ static int admv1013_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id admv1013_id[] = {
-	{ .name = "admv1013" },
+	{ "admv1013", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, admv1013_id);

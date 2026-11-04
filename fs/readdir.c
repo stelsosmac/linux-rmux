@@ -87,8 +87,6 @@ EXPORT_SYMBOL(wrap_directory_iterator);
 int iterate_dir(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
-	/* never an entry, never removed: nothing for the lock to keep still */
-	bool locked = !(file->f_op->fop_flags & FOP_IMMUTABLE);
 	int res = -ENOTDIR;
 
 	if (!file->f_op->iterate_shared)
@@ -102,11 +100,9 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 	if (res)
 		goto out;
 
-	if (locked) {
-		res = down_read_killable(&inode->i_rwsem);
-		if (res)
-			goto out;
-	}
+	res = down_read_killable(&inode->i_rwsem);
+	if (res)
+		goto out;
 
 	res = -ENOENT;
 	if (!IS_DEADDIR(inode)) {
@@ -116,8 +112,7 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 		fsnotify_access(file);
 		file_accessed(file);
 	}
-	if (locked)
-		inode_unlock_shared(inode);
+	inode_unlock_shared(inode);
 out:
 	return res;
 }

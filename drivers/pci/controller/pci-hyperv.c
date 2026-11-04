@@ -1040,38 +1040,19 @@ static void put_pcichild(struct hv_pci_dev *hpdev)
 
 /*
  * There is no good way to get notified from vmbus_onoffer_rescind(),
- * so let's use polling here, since this is not a hot path. If
- * wait_for_response() has been polling for 2 minutes
- * without either a rescind or completion, add a warning.
+ * so let's use polling here, since this is not a hot path.
  */
-#define PCI_RESPONSE_WARN_POLL_COUNT 1200
-
 static int wait_for_response(struct hv_device *hdev,
-			     struct completion *comp,
-			     const char *msg_type)
+			     struct completion *comp)
 {
-	u64 counter = 0;
-
 	while (true) {
 		if (hdev->channel->rescind) {
 			dev_warn_once(&hdev->device, "The device is gone.\n");
 			return -ENODEV;
 		}
 
-		counter++;
-
-		if (wait_for_completion_timeout(comp, HZ / 10)) {
-			if (counter > PCI_RESPONSE_WARN_POLL_COUNT)
-				dev_warn(&hdev->device,
-					 "Late %s completion arrived.\n", msg_type);
+		if (wait_for_completion_timeout(comp, HZ / 10))
 			break;
-		}
-
-		if (counter == PCI_RESPONSE_WARN_POLL_COUNT) {
-			dev_err(&hdev->device,
-				"%s stuck waiting for response, relid = %u\n",
-				msg_type, hdev->channel->offermsg.child_relid);
-		}
 	}
 
 	return 0;
@@ -1537,8 +1518,7 @@ static int hv_read_config_block(struct pci_dev *pdev, void *buf,
 	if (ret)
 		return ret;
 
-	ret = wait_for_response(hbus->hdev, &comp_pkt.comp_pkt.host_event,
-				"PCI_READ_BLOCK");
+	ret = wait_for_response(hbus->hdev, &comp_pkt.comp_pkt.host_event);
 	if (ret)
 		return ret;
 
@@ -1627,8 +1607,7 @@ static int hv_write_config_block(struct pci_dev *pdev, void *buf,
 	if (ret)
 		return ret;
 
-	ret = wait_for_response(hbus->hdev, &comp_pkt.host_event,
-				"PCI_WRITE_BLOCK");
+	ret = wait_for_response(hbus->hdev, &comp_pkt.host_event);
 	if (ret)
 		return ret;
 
@@ -2140,7 +2119,6 @@ static bool hv_pcie_init_dev_msi_info(struct device *dev, struct irq_domain *dom
 	info->ops->msi_prepare = hv_msi_prepare;
 
 	chip->irq_set_affinity = irq_chip_set_affinity_parent;
-	chip->irq_retrigger = irq_chip_retrigger_hierarchy;
 
 	if (IS_ENABLED(CONFIG_X86))
 		chip->flags |= IRQCHIP_MOVE_DEFERRED;
@@ -2645,8 +2623,7 @@ static struct hv_pci_dev *new_pcichild_device(struct hv_pcibus_device *hbus,
 	if (ret)
 		goto error;
 
-	if (wait_for_response(hbus->hdev, &comp_pkt.host_event,
-			      "PCI_QUERY_RESOURCE_REQUIREMENTS"))
+	if (wait_for_response(hbus->hdev, &comp_pkt.host_event))
 		goto error;
 
 	hpdev->desc = *desc;
@@ -3278,8 +3255,7 @@ static int hv_pci_protocol_negotiation(struct hv_device *hdev,
 				(unsigned long)pkt, VM_PKT_DATA_INBAND,
 				VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED);
 		if (!ret)
-			ret = wait_for_response(hdev, &comp_pkt.host_event,
-						"PCI_QUERY_PROTOCOL_VERSION");
+			ret = wait_for_response(hdev, &comp_pkt.host_event);
 
 		if (ret) {
 			dev_err(&hdev->device,
@@ -3499,8 +3475,7 @@ enter_d0_retry:
 			       (unsigned long)pkt, VM_PKT_DATA_INBAND,
 			       VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED);
 	if (!ret)
-		ret = wait_for_response(hdev, &comp_pkt.host_event,
-					"PCI_BUS_D0ENTRY");
+		ret = wait_for_response(hdev, &comp_pkt.host_event);
 
 	if (ret)
 		goto exit;
@@ -3577,8 +3552,7 @@ static int hv_pci_query_relations(struct hv_device *hdev)
 	ret = vmbus_sendpacket(hdev->channel, &message, sizeof(message),
 			       0, VM_PKT_DATA_INBAND, 0);
 	if (!ret)
-		ret = wait_for_response(hdev, &comp,
-					"PCI_QUERY_BUS_RELATIONS");
+		ret = wait_for_response(hdev, &comp);
 
 	/*
 	 * In the case of fast device addition/removal, it's possible that
@@ -3669,8 +3643,7 @@ static int hv_send_resources_allocated(struct hv_device *hdev)
 				VM_PKT_DATA_INBAND,
 				VMBUS_DATA_PACKET_FLAG_COMPLETION_REQUESTED);
 		if (!ret)
-			ret = wait_for_response(hdev, &comp_pkt.host_event,
-						"PCI_RESOURCE_ASSIGNED");
+			ret = wait_for_response(hdev, &comp_pkt.host_event);
 		if (ret)
 			break;
 
@@ -4181,9 +4154,6 @@ static struct hv_driver hv_pci_drv = {
 	.remove		= hv_pci_remove,
 	.suspend	= hv_pci_suspend,
 	.resume		= hv_pci_resume,
-	.driver = {
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-	},
 };
 
 static void __exit exit_hv_pci_drv(void)

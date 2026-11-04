@@ -510,9 +510,10 @@ NOKPROBE_SYMBOL(kprobe_emulate_ret);
 
 static void kprobe_emulate_call(struct kprobe *p, struct pt_regs *regs)
 {
-	unsigned long ip = regs->ip - INT3_INSN_SIZE + p->ainsn.size;
+	unsigned long func = regs->ip - INT3_INSN_SIZE + p->ainsn.size;
 
-	int3_emulate_call(regs, ip, ip + p->ainsn.rel32);
+	func += p->ainsn.rel32;
+	int3_emulate_call(regs, func);
 }
 NOKPROBE_SYMBOL(kprobe_emulate_call);
 
@@ -760,6 +761,9 @@ static int arch_copy_kprobe(struct kprobe *p)
 int arch_prepare_kprobe(struct kprobe *p)
 {
 	int ret;
+
+	if (alternatives_text_reserved(p->addr, p->addr))
+		return -EINVAL;
 
 	if (!can_probe((unsigned long)p->addr))
 		return -EILSEQ;

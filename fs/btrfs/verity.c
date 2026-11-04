@@ -94,20 +94,6 @@ static loff_t merkle_file_pos(const struct inode *inode)
 }
 
 /*
- * Start a transaction for removing verity items or the verity orphan.
- *
- * Like unlink, this only deletes items and frees space in the end, so the
- * reservation may come from the global reserve when the filesystem is full
- * (-ENOSPC) and is not subject to the qgroup limit (-EDQUOT). Otherwise a
- * failed enable could never be cleaned up in either situation.
- */
-static struct btrfs_trans_handle *start_verity_cleanup_trans(struct btrfs_root *root,
-							     unsigned int num_items)
-{
-	return btrfs_start_transaction_fallback_global_rsv(root, num_items);
-}
-
-/*
  * Drop all the items for this inode with this key_type.
  *
  * @inode:     inode to drop items for
@@ -134,7 +120,7 @@ static int drop_verity_items(struct btrfs_inode *inode, u8 key_type)
 
 	while (1) {
 		/* 1 for the item being dropped */
-		trans = start_verity_cleanup_trans(root, 1);
+		trans = btrfs_start_transaction(root, 1);
 		if (IS_ERR(trans))
 			return PTR_ERR(trans);
 
@@ -472,7 +458,7 @@ static int rollback_verity(struct btrfs_inode *inode)
 	if (ret) {
 		btrfs_handle_fs_error(root->fs_info, ret,
 				"failed to drop verity items in rollback %llu",
-				inode->vfs_inode.i_ino);
+				(u64)inode->vfs_inode.i_ino);
 		goto out;
 	}
 
@@ -480,13 +466,13 @@ static int rollback_verity(struct btrfs_inode *inode)
 	 * 1 for updating the inode flag
 	 * 1 for deleting the orphan
 	 */
-	trans = start_verity_cleanup_trans(root, 2);
+	trans = btrfs_start_transaction(root, 2);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
 		trans = NULL;
 		btrfs_handle_fs_error(root->fs_info, ret,
 			"failed to start transaction in verity rollback %llu",
-			inode->vfs_inode.i_ino);
+			(u64)inode->vfs_inode.i_ino);
 		goto out;
 	}
 	inode->ro_flags &= ~BTRFS_INODE_RO_VERITY;
@@ -652,7 +638,7 @@ rollback:
 	rollback_ret = rollback_verity(inode);
 	if (rollback_ret)
 		btrfs_err(inode->root->fs_info,
-			  "failed to rollback verity items: %pe", ERR_PTR(rollback_ret));
+			  "failed to rollback verity items: %d", rollback_ret);
 	return ret;
 }
 
@@ -734,18 +720,14 @@ again:
 			goto out;
 
 		folio_lock(folio);
-		/* Folio was truncated from mapping. */
-		if (!folio->mapping) {
+		/* If it's not uptodate after we have the lock, we got a read error. */
+		if (!folio_test_uptodate(folio)) {
 			folio_unlock(folio);
 			folio_put(folio);
-			goto again;
+			return ERR_PTR(-EIO);
 		}
-		/* Another reader may have filled the folio while we waited. */
-		if (folio_test_uptodate(folio)) {
-			folio_unlock(folio);
-			goto out;
-		}
-		goto read_folio;
+		folio_unlock(folio);
+		goto out;
 	}
 
 	folio = filemap_alloc_folio(mapping_gfp_constraint(inode->i_mapping, ~__GFP_FS),
@@ -762,7 +744,6 @@ again:
 		return ERR_PTR(ret);
 	}
 
-read_folio:
 	/*
 	 * Merkle item keys are indexed from byte 0 in the merkle tree.
 	 * They have the form:
@@ -772,7 +753,6 @@ read_folio:
 	ret = read_key_bytes(BTRFS_I(inode), BTRFS_VERITY_MERKLE_ITEM_KEY, off,
 			     folio_address(folio), PAGE_SIZE, folio);
 	if (ret < 0) {
-		folio_unlock(folio);
 		folio_put(folio);
 		return ERR_PTR(ret);
 	}

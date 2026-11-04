@@ -6,6 +6,7 @@
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -542,8 +543,6 @@ static void qcom_pmic_typec_pdphy_stop(struct pmic_typec *tcpm)
 
 	for (i = 0; i < pmic_typec_pdphy->nr_irqs; i++)
 		disable_irq(pmic_typec_pdphy->irq_data[i].irq);
-
-	cancel_work_sync(&pmic_typec_pdphy->reset_work);
 
 	qcom_pmic_typec_pdphy_reset_on(pmic_typec_pdphy);
 

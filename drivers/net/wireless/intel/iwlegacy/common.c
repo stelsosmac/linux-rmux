@@ -2179,8 +2179,8 @@ il_remove_station(struct il_priv *il, const u8 sta_id, const u8 * addr)
 	il->stations[sta_id].used &= ~IL_STA_DRIVER_ACTIVE;
 
 	il->num_stations--;
-	if (WARN_ON(il->num_stations < 0))
-		il->num_stations = 0;
+
+	BUG_ON(il->num_stations < 0);
 
 	spin_unlock_irqrestore(&il->sta_lock, flags);
 
@@ -2326,10 +2326,9 @@ il_dealloc_bcast_stations(struct il_priv *il)
 		if (!(il->stations[i].used & IL_STA_BCAST))
 			continue;
 
-		il->stations[i].used = 0;
+		il->stations[i].used &= ~IL_STA_UCODE_ACTIVE;
 		il->num_stations--;
-		if (WARN_ON(il->num_stations < 0))
-			il->num_stations = 0;
+		BUG_ON(il->num_stations < 0);
 		kfree(il->stations[i].lq);
 		il->stations[i].lq = NULL;
 	}

@@ -289,7 +289,6 @@ struct fsl_qspi {
 	struct pm_qos_request pm_qos_req;
 	struct device *dev;
 	int selected;
-	u32 selected_freq;
 	u32 memmap_phy;
 };
 
@@ -552,8 +551,7 @@ static void fsl_qspi_select_mem(struct fsl_qspi *q, struct spi_device *spi,
 	unsigned long rate = op->max_freq;
 	int ret;
 
-	if (q->selected == spi_get_chipselect(spi, 0) &&
-	    q->selected_freq == op->max_freq)
+	if (q->selected == spi_get_chipselect(spi, 0))
 		return;
 
 	if (needs_4x_clock(q))
@@ -573,7 +571,6 @@ static void fsl_qspi_select_mem(struct fsl_qspi *q, struct spi_device *spi,
 	}
 
 	q->selected = spi_get_chipselect(spi, 0);
-	q->selected_freq = op->max_freq;
 
 	fsl_qspi_invalidate(q);
 }

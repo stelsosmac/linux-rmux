@@ -370,10 +370,6 @@ static int u32_init(struct tcf_proto *tp)
 
 	refcount_set(&root_ht->refcnt, 1);
 	root_ht->handle = tp_c ? gen_new_htid(tp_c, root_ht) : id2handle(0);
-	if (root_ht->handle == 0) {
-		kfree(root_ht);
-		return -ENOMEM;
-	}
 	root_ht->prio = tp->prio;
 	root_ht->is_root = true;
 	idr_init(&root_ht->handle_idr);
@@ -699,31 +695,19 @@ out:
 	return ret;
 }
 
-static u32 gen_new_kid(struct tc_u_hnode *ht, u32 htid, int *err)
+static u32 gen_new_kid(struct tc_u_hnode *ht, u32 htid)
 {
 	u32 index = htid | 0x800;
 	u32 max = htid | 0xFFF;
 
-	*err = 0;
-
 	if (idr_alloc_u32(&ht->handle_idr, NULL, &index, max, GFP_KERNEL)) {
 		index = htid + 1;
-		*err = idr_alloc_u32(&ht->handle_idr, NULL, &index, max,
-				     GFP_KERNEL);
-		if (*err)
-			return 0;
+		if (idr_alloc_u32(&ht->handle_idr, NULL, &index, max,
+				 GFP_KERNEL))
+			index = max;
 	}
 
 	return index;
-}
-
-static int u32_kid_extack(int err, struct netlink_ext_ack *extack)
-{
-	if (err == -ENOSPC)
-		NL_SET_ERR_MSG_MOD(extack, "Hash table node ID pool exhausted");
-	else
-		NL_SET_ERR_MSG_MOD(extack, "Failed to allocate node ID");
-	return err;
 }
 
 static const struct nla_policy u32_policy[TCA_U32_MAX + 1] = {
@@ -841,7 +825,7 @@ static struct tc_u_knode *u32_init_knode(struct net *net, struct tcf_proto *tp,
 	struct tc_u32_sel *s = &n->sel;
 	struct tc_u_knode *new;
 
-	new = kzalloc_flex(*new, sel.keys, s->nkeys, GFP_KERNEL_ACCOUNT);
+	new = kzalloc_flex(*new, sel.keys, s->nkeys);
 	if (!new)
 		return NULL;
 
@@ -1003,16 +987,8 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 				return -ENOMEM;
 			}
 		} else {
-			/* The IDR is keyed on the mapped id, and that is
-			 * what the destroy paths remove. Ask for it here,
-			 * so a manual handle colliding with the
-			 * auto-allocated id space is rejected (-ENOSPC)
-			 * instead of aliasing a future auto id.
-			 */
-			u32 id = handle2id(handle);
-
-			err = idr_alloc_u32(&tp_c->handle_idr, ht, &id, id,
-					    GFP_KERNEL);
+			err = idr_alloc_u32(&tp_c->handle_idr, ht, &handle,
+					    handle, GFP_KERNEL);
 			if (err) {
 				kfree(ht);
 				return err;
@@ -1103,9 +1079,7 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 		 * handle which is used to uniquely identify the match entry.
 		 */
 		if (!TC_U32_NODE(handle)) {
-			handle = gen_new_kid(ht, htid, &err);
-			if (err)
-				return u32_kid_extack(err, extack);
+			handle = gen_new_kid(ht, htid);
 		} else {
 			handle = htid | TC_U32_NODE(handle);
 			err = idr_alloc_u32(&ht->handle_idr, NULL, &handle,
@@ -1117,9 +1091,7 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 		/* The user did not give us a handle; lets just generate one
 		 * from the table's pool of nodeids.
 		 */
-		handle = gen_new_kid(ht, htid, &err);
-		if (err)
-			return u32_kid_extack(err, extack);
+		handle = gen_new_kid(ht, htid);
 	}
 
 	if (tb[TCA_U32_SEL] == NULL) {
@@ -1135,23 +1107,15 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 		goto erridr;
 	}
 
-	if (s->offshift >= 16) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "offshift must be less than 16");
-		err = -EINVAL;
-		goto erridr;
-	}
-
-	n = kzalloc_flex(*n, sel.keys, s->nkeys, GFP_KERNEL_ACCOUNT);
+	n = kzalloc_flex(*n, sel.keys, s->nkeys);
 	if (n == NULL) {
 		err = -ENOBUFS;
 		goto erridr;
 	}
 
 #ifdef CONFIG_CLS_U32_PERF
-	n->pf = __alloc_percpu_gfp(struct_size(n->pf, kcnts, s->nkeys),
-				   __alignof__(struct tc_u32_pcnt),
-				   GFP_KERNEL_ACCOUNT);
+	n->pf = __alloc_percpu(struct_size(n->pf, kcnts, s->nkeys),
+			       __alignof__(struct tc_u32_pcnt));
 	if (!n->pf) {
 		err = -ENOBUFS;
 		goto errfree;
@@ -1173,7 +1137,7 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 		goto errout;
 
 #ifdef CONFIG_CLS_U32_MARK
-	n->pcpu_success = alloc_percpu_gfp(u32, GFP_KERNEL_ACCOUNT);
+	n->pcpu_success = alloc_percpu(u32);
 	if (!n->pcpu_success) {
 		err = -ENOMEM;
 		goto errout;
@@ -1374,9 +1338,6 @@ static void u32_bind_class(void *fh, u32 classid, unsigned long cl, void *q,
 			   unsigned long base)
 {
 	struct tc_u_knode *n = fh;
-
-	if (TC_U32_KEY(n->handle) == 0)
-		return;
 
 	tc_cls_bind_class(classid, cl, q, &n->res, base);
 }

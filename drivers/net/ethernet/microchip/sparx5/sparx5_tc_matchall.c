@@ -160,7 +160,6 @@ static int sparx5_tc_matchall_destroy(struct net_device *ndev,
 	}
 
 	list_del(&entry->list);
-	kfree(entry);
 
 	return err;
 }

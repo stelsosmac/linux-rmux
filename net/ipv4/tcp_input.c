@@ -252,7 +252,7 @@ static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 				struct tcp_sock *tp = tcp_sk(sk);
 
 				val = tcp_win_from_space(sk, sk->sk_rcvbuf);
-				WRITE_ONCE(tp->window_clamp, val);
+				tcp_set_window_clamp(sk, val);
 
 				if (tp->window_clamp < tp->rcvq_space.space)
 					tp->rcvq_space.space = tp->window_clamp;
@@ -1039,9 +1039,9 @@ static void tcp_event_data_recv(struct sock *sk, struct sk_buff *skb)
 			/* The fastest case is the first. */
 			icsk->icsk_ack.ato = (icsk->icsk_ack.ato >> 1) + TCP_ATO_MIN / 2;
 		} else if (m < icsk->icsk_ack.ato) {
-			icsk->icsk_ack.ato = min3((icsk->icsk_ack.ato >> 1) + (u32)m,
-						  icsk->icsk_rto,
-						  (u32)TCP_DELACK_MAX);
+			icsk->icsk_ack.ato = (icsk->icsk_ack.ato >> 1) + m;
+			if (icsk->icsk_ack.ato > icsk->icsk_rto)
+				icsk->icsk_ack.ato = icsk->icsk_rto;
 		} else if (m > icsk->icsk_rto) {
 			/* Too long gap. Apparently sender failed to
 			 * restart window, so that we send ACKs quickly.
@@ -4465,12 +4465,6 @@ no_queue:
 	return 1;
 
 old_ack:
-	/* An old ACK can carry new data. Update TS.Recent before SACK
-	 * processing can trigger a retransmission.
-	 */
-	if (flag & FLAG_UPDATE_TS_RECENT)
-		tcp_replace_ts_recent(tp, TCP_SKB_CB(skb)->seq);
-
 	/* If data was SACKed, tag it and see if we should send more data.
 	 * If data was DSACKed, see if we can undo a cwnd reduction.
 	 */
@@ -4848,20 +4842,18 @@ static enum skb_drop_reason tcp_sequence(const struct sock *sk,
 					 const struct tcphdr *th)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
-	u32 seq_limit;
 
 	if (before(end_seq, tp->rcv_wup))
 		return SKB_DROP_REASON_TCP_OLD_SEQUENCE;
 
-	seq_limit = tp->rcv_nxt + tcp_max_receive_window(tp);
-	if (unlikely(after(end_seq, seq_limit))) {
+	if (unlikely(after(end_seq, tp->rcv_nxt + tcp_max_receive_window(tp)))) {
 		/* Some stacks are known to handle FIN incorrectly; allow the
 		 * FIN to extend beyond the window and check it in detail later.
 		 */
-		if (!after(end_seq - th->fin, seq_limit))
+		if (!after(end_seq - th->fin, tp->rcv_nxt + tcp_receive_window(tp)))
 			return SKB_NOT_DROPPED_YET;
 
-		if (after(seq, seq_limit))
+		if (after(seq, tp->rcv_nxt + tcp_max_receive_window(tp)))
 			return SKB_DROP_REASON_TCP_INVALID_SEQUENCE;
 
 		/* Only accept this packet if receive queue is empty. */
@@ -5058,9 +5050,8 @@ static void tcp_rcv_spurious_retrans(struct sock *sk,
 	    skb->protocol == htons(ETH_P_IPV6) &&
 	    (tcp_sk(sk)->inet_conn.icsk_ack.lrcv_flowlabel !=
 	     ntohl(ip6_flowlabel(ipv6_hdr(skb)))) &&
-	    __sk_rethink_txhash_reset_dst(sk)) {
+	    sk_rethink_txhash(sk))
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPDUPLICATEDATAREHASH);
-	}
 
 	/* Save last flowlabel after a spurious retrans. */
 	tcp_save_lrcv_flowlabel(sk, skb);
@@ -6496,7 +6487,6 @@ reset:
  *	  or pure receivers (this means either the sequence number or the ack
  *	  value must stay constant)
  *	- Unexpected TCP option.
- *	- ACK sequence number is outside [SND.UNA, SND.NXT].
  *
  *	When these conditions are not satisfied it drops into a standard
  *	receive procedure patterned after RFC793 to handle all cases.
@@ -6514,7 +6504,7 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb)
 	/* TCP congestion window tracking */
 	trace_tcp_probe(sk, skb);
 
-	tcp_mstamp_refresh_inline(tp);
+	tcp_mstamp_refresh(tp);
 	if (unlikely(!rcu_access_pointer(sk->sk_rx_dst)))
 		inet_csk(sk)->icsk_af_ops->sk_rx_dst_set(sk, skb);
 	/*
@@ -6546,7 +6536,7 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb)
 
 	if ((tcp_flag_word(th) & TCP_HP_BITS) == tp->pred_flags &&
 	    TCP_SKB_CB(skb)->seq == tp->rcv_nxt &&
-	    between(TCP_SKB_CB(skb)->ack_seq, tp->snd_una, tp->snd_nxt)) {
+	    !after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt)) {
 		int tcp_header_len = tp->tcp_header_len;
 		s32 delta = 0;
 		int flag = 0;
@@ -7673,7 +7663,6 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	tcp_rsk(req)->af_specific = af_ops;
 	tcp_rsk(req)->ts_off = 0;
 	tcp_rsk(req)->req_usec_ts = false;
-	tcp_rsk(req)->txhash = net_tx_rndhash();
 #if IS_ENABLED(CONFIG_MPTCP)
 	tcp_rsk(req)->is_mptcp = 0;
 #endif
@@ -7697,15 +7686,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	/* Note: tcp_v6_init_req() might override ir_iif for link locals */
 	inet_rsk(req)->ir_iif = inet_request_bound_dev_if(sk, skb);
 
-	if (want_cookie) {
-		isn = cookie_init_sequence(af_ops, skb, &req->mss);
-		/* Use the cookie as txhash so the SYN-ACK and the later full
-		 * socket make the same egress choice (IPv6 ECMP path; IPv4 TX queue).
-		 */
-		tcp_rsk(req)->txhash = isn;
-	}
-
-	dst = af_ops->route_req(sk, skb, &fl, req, want_cookie ? 0 : isn);
+	dst = af_ops->route_req(sk, skb, &fl, req, isn);
 	if (!dst)
 		goto drop_and_free;
 
@@ -7745,7 +7726,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	tcp_ecn_create_request(req, skb, sk, dst);
 
 	if (want_cookie) {
-		cookie_record_sent(sk);
+		isn = cookie_init_sequence(af_ops, sk, skb, &req->mss);
 		if (!tmp_opt.tstamp_ok)
 			inet_rsk(req)->ecn_ok = 0;
 	}
@@ -7763,6 +7744,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	}
 #endif
 	tcp_rsk(req)->snt_isn = isn;
+	tcp_rsk(req)->txhash = net_tx_rndhash();
 	tcp_rsk(req)->syn_tos = TCP_SKB_CB(skb)->ip_dsfield;
 	tcp_openreq_init_rwin(req, sk, dst);
 	sk_rx_queue_set(req_to_sk(req), skb);

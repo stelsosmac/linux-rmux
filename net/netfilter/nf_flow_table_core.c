@@ -258,14 +258,6 @@ static void flow_offload_route_release(struct flow_offload *flow)
 	nft_flow_dst_release(flow, FLOW_OFFLOAD_DIR_REPLY);
 }
 
-static void flow_offload_free_rcu(struct rcu_head *rcu_head)
-{
-	struct flow_offload *flow = container_of(rcu_head, struct flow_offload, rcu_head);
-
-	nf_ct_put(flow->ct);
-	kfree(flow);
-}
-
 void flow_offload_free(struct flow_offload *flow)
 {
 	switch (flow->type) {
@@ -275,7 +267,8 @@ void flow_offload_free(struct flow_offload *flow)
 	default:
 		break;
 	}
-	call_rcu(&flow->rcu_head, flow_offload_free_rcu);
+	nf_ct_put(flow->ct);
+	kfree_rcu(flow, rcu_head);
 }
 EXPORT_SYMBOL_GPL(flow_offload_free);
 
@@ -339,18 +332,17 @@ int flow_offload_add(struct nf_flowtable *flow_table, struct flow_offload *flow)
 	flow->timeout = nf_flowtable_time_stamp + flow_offload_get_timeout(flow);
 
 	err = rhashtable_insert_fast(&flow_table->rhashtable,
-				     &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
+				     &flow->tuplehash[0].node,
 				     nf_flow_offload_rhash_params);
 	if (err < 0)
 		return err;
 
-	/* GC only iterates original-direction entries; publish original last. */
 	err = rhashtable_insert_fast(&flow_table->rhashtable,
-				     &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
+				     &flow->tuplehash[1].node,
 				     nf_flow_offload_rhash_params);
 	if (err < 0) {
 		rhashtable_remove_fast(&flow_table->rhashtable,
-				       &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
+				       &flow->tuplehash[0].node,
 				       nf_flow_offload_rhash_params);
 		return err;
 	}
@@ -575,17 +567,10 @@ static void nf_flow_table_extend_ct_timeout(struct nf_conn *ct)
 static void nf_flow_offload_gc_step(struct nf_flowtable *flow_table,
 				    struct flow_offload *flow, void *data)
 {
-	bool teardown;
-
-	if (test_bit(NF_FLOW_PENDING, &flow->flags))
-		return;
-
-	teardown = test_bit(NF_FLOW_TEARDOWN, &flow->flags);
+	bool teardown = test_bit(NF_FLOW_TEARDOWN, &flow->flags);
 
 	if (nf_flow_has_expired(flow) ||
 	    nf_ct_is_dying(flow->ct) ||
-	    !nf_flow_dst_check(&flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple) ||
-	    !nf_flow_dst_check(&flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple) ||
 	    nf_flow_custom_gc(flow_table, flow)) {
 		flow_offload_teardown(flow);
 		teardown = true;
@@ -866,7 +851,6 @@ out_pernet:
 
 static void __exit nf_flow_table_module_exit(void)
 {
-	rcu_barrier();
 	nf_flow_table_offload_exit();
 	unregister_pernet_subsys(&nf_flow_table_net_ops);
 	kmem_cache_destroy(flow_offload_cachep);

@@ -453,8 +453,7 @@ EXPORT_SYMBOL_GPL(cio_commit_config);
 /**
  * cio_update_schib - Perform stsch and update schib if subchannel is valid.
  * @sch: subchannel on which to perform stsch
- * Return zero on success, -ENODEV if the subchannel is not operational,
- * -EACCES if the subchannel has no valid device.
+ * Return zero on success, -ENODEV otherwise.
  */
 int cio_update_schib(struct subchannel *sch)
 {
@@ -463,12 +462,10 @@ int cio_update_schib(struct subchannel *sch)
 	if (stsch(sch->schid, &schib))
 		return -ENODEV;
 
-	if (!css_sch_is_valid(&schib)) {
-		memset(&sch->schib, 0, sizeof(sch->schib));
-		return -EACCES;
-	}
-
 	memcpy(&sch->schib, &schib, sizeof(schib));
+
+	if (!css_sch_is_valid(&schib))
+		return -EACCES;
 
 	return 0;
 }

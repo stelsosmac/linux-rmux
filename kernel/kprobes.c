@@ -42,7 +42,6 @@
 #include <linux/execmem.h>
 #include <linux/cleanup.h>
 #include <linux/wait.h>
-#include <linux/wait_bit.h>
 
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
@@ -496,16 +495,14 @@ static bool kprobe_queued(struct kprobe *p)
 static struct kprobe *get_optimized_kprobe(kprobe_opcode_t *addr)
 {
 	int i;
-	struct kprobe *p;
+	struct kprobe *p = NULL;
 	struct optimized_kprobe *op;
 
 	/* Don't check i == 0, since that is a breakpoint case. */
-	for (i = 1; i < MAX_OPTIMIZED_LENGTH / sizeof(kprobe_opcode_t); i++) {
+	for (i = 1; !p && i < MAX_OPTIMIZED_LENGTH / sizeof(kprobe_opcode_t); i++)
 		p = get_kprobe(addr - i);
-		/* A disabled probe can have prepared, but inactive, optinsns. */
-		if (!p || !kprobe_optready(p) || kprobe_disarmed(p))
-			continue;
 
+	if (p && kprobe_optready(p)) {
 		op = container_of(p, struct optimized_kprobe, kp);
 		if (arch_within_optimized_kprobe(op, addr))
 			return p;
@@ -529,8 +526,7 @@ enum {
 	OPTIMIZER_ST_FLUSHING = 2,
 };
 
-/* Bumped at the end of each kprobe_optimizer() pass, under 'kprobe_mutex' */
-static unsigned long optimizer_passes;
+static DECLARE_COMPLETION(optimizer_completion);
 
 #define OPTIMIZE_DELAY 5
 
@@ -658,9 +654,9 @@ static void kprobe_optimizer(void)
 		do_free_cleaned_kprobes();
 	}
 
-	/* Step 5: Wake up flushers, and kick optimizer again if needed. */
-	optimizer_passes++;
-	wake_up_var_locked(&optimizer_passes, &kprobe_mutex);
+	/* Step 5: Kick optimizer again if needed. But if there is a flush requested, */
+	if (completion_done(&optimizer_completion))
+		complete(&optimizer_completion);
 
 	if (!list_empty(&optimizing_list) || !list_empty(&unoptimizing_list))
 		kick_kprobe_optimizer();	/*normal kick*/
@@ -712,8 +708,7 @@ static void wait_for_kprobe_optimizer_locked(void)
 	lockdep_assert_held(&kprobe_mutex);
 
 	while (!list_empty(&optimizing_list) || !list_empty(&unoptimizing_list)) {
-		unsigned long passes = optimizer_passes;
-
+		init_completion(&optimizer_completion);
 		/*
 		 * Set state to OPTIMIZER_ST_FLUSHING and wake up the thread if it's
 		 * idle. If it's already kicked, it will see the state change.
@@ -722,12 +717,9 @@ static void wait_for_kprobe_optimizer_locked(void)
 			OPTIMIZER_ST_FLUSHING) != OPTIMIZER_ST_FLUSHING)
 			wake_up(&kprobe_optimizer_wait);
 
-		/*
-		 * kprobe_optimizer() holds 'kprobe_mutex' for a whole pass, which
-		 * this drops while sleeping, so a new count means a full pass ran.
-		 */
-		wait_var_event_mutex(&optimizer_passes,
-				     optimizer_passes != passes, &kprobe_mutex);
+		mutex_unlock(&kprobe_mutex);
+		wait_for_completion(&optimizer_completion);
+		mutex_lock(&kprobe_mutex);
 	}
 }
 
@@ -1455,14 +1447,8 @@ static bool __within_kprobe_blacklist(unsigned long addr)
 	/*
 	 * If 'kprobe_blacklist' is defined, check the address and
 	 * reject any probe registration in the prohibited area.
-	 * Note: this can return true during transition period where
-	 * (start_addr, end_addr) in the black list is shrinking
-	 * but old entry has not been removed yet. This is acceptable
-	 * because the worst case is that we reject more probes than
-	 * we should.
 	 */
-	guard(rcu)();
-	list_for_each_entry_rcu(ent, &kprobe_blacklist, list) {
+	list_for_each_entry(ent, &kprobe_blacklist, list) {
 		if (addr >= ent->start_addr && addr < ent->end_addr)
 			return true;
 	}
@@ -2523,7 +2509,7 @@ int kprobe_add_ksym_blacklist(unsigned long entry)
 	ent->start_addr = entry;
 	ent->end_addr = entry + size;
 	INIT_LIST_HEAD(&ent->list);
-	list_add_tail_rcu(&ent->list, &kprobe_blacklist);
+	list_add_tail(&ent->list, &kprobe_blacklist);
 
 	return (int)size;
 }
@@ -2617,8 +2603,8 @@ static void kprobe_remove_area_blacklist(unsigned long start, unsigned long end)
 	list_for_each_entry_safe(ent, n, &kprobe_blacklist, list) {
 		if (ent->start_addr < start || ent->start_addr >= end)
 			continue;
-		list_del_rcu(&ent->list);
-		kfree_rcu(ent, rcu);
+		list_del(&ent->list);
+		kfree(ent);
 	}
 }
 

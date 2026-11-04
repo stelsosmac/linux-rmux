@@ -199,18 +199,16 @@ nvkm_cstate_prog(struct nvkm_clk *clk, struct nvkm_pstate *pstate, int cstatei)
 	}
 
 	if (volt) {
-		int err = nvkm_volt_set_id(volt, cstate->voltage,
-					   pstate->base.voltage, clk->temp, -1);
-
-		if (err && err != -ENODEV)
-			nvkm_error(subdev, "failed to lower voltage: %d\n", err);
+		ret = nvkm_volt_set_id(volt, cstate->voltage,
+				       pstate->base.voltage, clk->temp, -1);
+		if (ret && ret != -ENODEV)
+			nvkm_error(subdev, "failed to lower voltage: %d\n", ret);
 	}
 
 	if (therm) {
-		int err = nvkm_therm_cstate(therm, pstate->fanspeed, -1);
-
-		if (err && err != -ENODEV)
-			nvkm_error(subdev, "failed to lower fan speed: %d\n", err);
+		ret = nvkm_therm_cstate(therm, pstate->fanspeed, -1);
+		if (ret && ret != -ENODEV)
+			nvkm_error(subdev, "failed to lower fan speed: %d\n", ret);
 	}
 
 	return ret;
@@ -272,18 +270,12 @@ nvkm_pstate_prog(struct nvkm_clk *clk, int pstatei)
 	struct nvkm_fb *fb = subdev->device->fb;
 	struct nvkm_pci *pci = subdev->device->pci;
 	struct nvkm_pstate *pstate;
-	bool found = false;
 	int ret, idx = 0;
 
 	list_for_each_entry(pstate, &clk->states, head) {
-		if (idx++ == pstatei) {
-			found = true;
+		if (idx++ == pstatei)
 			break;
-		}
 	}
-
-	if (!found)
-		return -EINVAL;
 
 	nvkm_debug(subdev, "setting performance state %d\n", pstatei);
 	clk->pstate = pstatei;
@@ -481,7 +473,6 @@ static int
 nvkm_clk_ustate_update(struct nvkm_clk *clk, int req)
 {
 	struct nvkm_pstate *pstate;
-	bool found = false;
 	int i = 0;
 
 	if (!clk->allow_reclock)
@@ -489,14 +480,12 @@ nvkm_clk_ustate_update(struct nvkm_clk *clk, int req)
 
 	if (req != -1 && req != -2) {
 		list_for_each_entry(pstate, &clk->states, head) {
-			if (pstate->pstate == req) {
-				found = true;
+			if (pstate->pstate == req)
 				break;
-			}
 			i++;
 		}
 
-		if (!found)
+		if (pstate->pstate != req)
 			return -EINVAL;
 		req = i;
 	}

@@ -312,17 +312,15 @@ static ssize_t nvmet_param_mdts_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
-	int ret, mdts;
+	int ret;
 
 	if (nvmet_is_port_enabled(port, __func__))
 		return -EACCES;
-	ret = kstrtoint(page, 0, &mdts);
-	if (ret || mdts < 0 || mdts > NVMET_MAX_MDTS) {
-		pr_err("Invalid value '%s' for mdts, should be 0-%d\n",
-		       page, NVMET_MAX_MDTS);
+	ret = kstrtoint(page, 0, &port->mdts);
+	if (ret) {
+		pr_err("Invalid value '%s' for mdts\n", page);
 		return -EINVAL;
 	}
-	port->mdts = mdts;
 	return count;
 }
 
@@ -534,7 +532,6 @@ static ssize_t nvmet_ns_device_path_store(struct config_item *item,
 	struct nvmet_subsys *subsys = ns->subsys;
 	size_t len;
 	int ret;
-	char *new_path = NULL;
 
 	mutex_lock(&subsys->lock);
 	ret = -EBUSY;
@@ -546,13 +543,11 @@ static ssize_t nvmet_ns_device_path_store(struct config_item *item,
 	if (!len)
 		goto out_unlock;
 
-	ret = -ENOMEM;
-	new_path = kmemdup_nul(page, len, GFP_KERNEL);
-	if (!new_path)
-		goto out_unlock;
-
 	kfree(ns->device_path);
-	ns->device_path = new_path;
+	ret = -ENOMEM;
+	ns->device_path = kmemdup_nul(page, len, GFP_KERNEL);
+	if (!ns->device_path)
+		goto out_unlock;
 
 	mutex_unlock(&subsys->lock);
 	return count;
@@ -817,7 +812,7 @@ static ssize_t nvmet_ns_resv_enable_store(struct config_item *item,
 
 	mutex_lock(&ns->subsys->lock);
 	if (ns->enabled) {
-		pr_err("the ns:%u is already enabled.\n", ns->nsid);
+		pr_err("the ns:%d is already enabled.\n", ns->nsid);
 		mutex_unlock(&ns->subsys->lock);
 		return -EINVAL;
 	}
@@ -883,7 +878,7 @@ static struct config_group *nvmet_ns_make(struct config_group *group,
 		goto out;
 	config_group_init_type_name(&ns->group, name, &nvmet_ns_type);
 
-	pr_info("adding nsid %u to subsystem %s\n", nsid, subsys->subsysnqn);
+	pr_info("adding nsid %d to subsystem %s\n", nsid, subsys->subsysnqn);
 
 	return &ns->group;
 out:
@@ -2012,6 +2007,7 @@ static void nvmet_port_release(struct config_item *item)
 	list_del(&port->global_entry);
 
 	key_put(port->keyring);
+	kfree(port->ana_state);
 	kfree(port);
 }
 
@@ -2051,9 +2047,15 @@ static struct config_group *nvmet_ports_make(struct config_group *group,
 	if (kstrtou16(name, 0, &portid))
 		return ERR_PTR(-EINVAL);
 
-	port = kzalloc_flex(*port, ana_state, NVMET_MAX_ANAGRPS + 1);
+	port = kzalloc_obj(*port);
 	if (!port)
 		return ERR_PTR(-ENOMEM);
+
+	port->ana_state = kzalloc_objs(*port->ana_state, NVMET_MAX_ANAGRPS + 1);
+	if (!port->ana_state) {
+		kfree(port);
+		return ERR_PTR(-ENOMEM);
+	}
 
 	if (IS_ENABLED(CONFIG_NVME_TARGET_TCP_TLS) && nvme_keyring_id()) {
 		port->keyring = key_lookup(nvme_keyring_id());

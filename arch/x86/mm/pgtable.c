@@ -74,9 +74,9 @@ static void pgd_set_mm(pgd_t *pgd, struct mm_struct *mm)
 	virt_to_ptdesc(pgd)->pt_mm = mm;
 }
 
-struct mm_struct *pgd_page_get_mm(struct ptdesc *pt)
+struct mm_struct *pgd_page_get_mm(struct page *page)
 {
-	return pt->pt_mm;
+	return page_ptdesc(page)->pt_mm;
 }
 
 static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
@@ -98,6 +98,17 @@ static void pgd_dtor(pgd_t *pgd)
 	pgd_list_del(pgd);
 	spin_unlock(&pgd_lock);
 }
+
+/*
+ * List of all pgd's needed for non-PAE so it can invalidate entries
+ * in both cached and uncached pgd's; not needed for PAE since the
+ * kernel pmd is shared. If PAE were not to share the pmd a similar
+ * tactic would be needed. This is essentially codepath-based locking
+ * against pageattr.c; it is the unique case in which a valid change
+ * of kernel pagetables can't be lazily synchronized by vmalloc faults.
+ * vmalloc faults work because attached pagetables are never freed.
+ * -- nyc
+ */
 
 #ifdef CONFIG_X86_PAE
 /*
@@ -705,36 +716,46 @@ int pmd_clear_huge(pmd_t *pmd)
 }
 
 #ifdef CONFIG_X86_64
-/*
- * Given a PUD poitner, detach and free the pointed-to
- * PMD page and any PTE page children. The entire range
- * under the PUD must not have any valid translations
- * and the TLB must have already been flushed.
+/**
+ * pud_free_pmd_page - Clear PUD entry and free PMD page
+ * @pud: Pointer to a PUD
+ * @addr: Virtual address associated with PUD
+ *
+ * Context: The PUD range has been unmapped and TLB purged.
+ * Return: 1 if clearing the entry succeeded. 0 otherwise.
+ *
+ * NOTE: Callers must allow a single page allocation.
  */
 int pud_free_pmd_page(pud_t *pud, unsigned long addr)
 {
+	pmd_t *pmd, *pmd_sv;
 	struct ptdesc *pt;
-	pmd_t *pmd;
 	int i;
 
 	pmd = pud_pgtable(*pud);
+	pmd_sv = (pmd_t *)__get_free_page(GFP_KERNEL);
+	if (!pmd_sv)
+		return 0;
 
-	/* Detach the PMD page: */
+	for (i = 0; i < PTRS_PER_PMD; i++) {
+		pmd_sv[i] = pmd[i];
+		if (!pmd_none(pmd[i]))
+			pmd_clear(&pmd[i]);
+	}
+
 	pud_clear(pud);
 
-	/*
-	 * PMD and all its descendents are unreachable
-	 * via normal page walks. Make them unreachable
-	 * in cached mid-level walks too:
-	 */
+	/* INVLPG to clear all paging-structure caches */
 	flush_tlb_kernel_range(addr, addr + PAGE_SIZE-1);
 
 	for (i = 0; i < PTRS_PER_PMD; i++) {
-		if (!pmd_none(pmd[i])) {
-			pt = page_ptdesc(pmd_page(pmd[i]));
+		if (!pmd_none(pmd_sv[i])) {
+			pt = page_ptdesc(pmd_page(pmd_sv[i]));
 			pagetable_dtor_free(pt);
 		}
 	}
+
+	free_page((unsigned long)pmd_sv);
 
 	pmd_free(&init_mm, pmd);
 

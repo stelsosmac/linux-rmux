@@ -102,10 +102,8 @@ int snd_hdac_ext_stream_init_all(struct hdac_bus *bus, int start_idx,
 
 	for (i = 0; i < num_stream; i++) {
 		struct hdac_ext_stream *hext_stream = kzalloc_obj(*hext_stream);
-		if (!hext_stream) {
-			snd_hdac_ext_stream_free_all(bus);
+		if (!hext_stream)
 			return -ENOMEM;
-		}
 		tag = ++stream_tag;
 		snd_hdac_ext_stream_init(bus, hext_stream, idx, dir, tag);
 		idx++;
@@ -113,6 +111,7 @@ int snd_hdac_ext_stream_init_all(struct hdac_bus *bus, int start_idx,
 	}
 
 	return 0;
+
 }
 EXPORT_SYMBOL_GPL(snd_hdac_ext_stream_init_all);
 
@@ -211,8 +210,8 @@ void snd_hdac_ext_stream_reset(struct hdac_ext_stream *hext_stream)
 			break;
 		udelay(3);
 	} while (--timeout);
-	snd_hdac_updatel(hext_stream->pplc_addr, AZX_REG_PPLCCTL,
-			 AZX_PPLCCTL_STRST, 0);
+	val &= ~AZX_PPLCCTL_STRST;
+	writel(val, hext_stream->pplc_addr + AZX_REG_PPLCCTL);
 	udelay(3);
 
 	timeout = 50;

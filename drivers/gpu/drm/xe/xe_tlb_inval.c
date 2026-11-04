@@ -280,8 +280,7 @@ static void xe_tlb_inval_fence_prep(struct xe_tlb_inval_fence *fence)
 		xe_tlb_inval_fence_signal_unlocked((__fence));	\
 	mutex_unlock(&(__tlb_inval)->seqno_lock);		\
 								\
-	/* Undelivered: fence already signalled, report done */	\
-	(__ret == -ECANCELED || __ret == -ENOTRECOVERABLE) ? 0 : __ret;	\
+	__ret == -ECANCELED ? 0 : __ret;			\
 })
 
 /**
@@ -530,7 +529,7 @@ int xe_tlb_inval_range_tilemask_submit(struct xe_device *xe, u32 asid,
 	struct xe_tile *tile;
 	u32 fence_id = 0;
 	u8 id;
-	int err = 0;
+	int err;
 
 	batch->num_fences = 0;
 	if (!tile_mask)

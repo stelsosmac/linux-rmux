@@ -765,7 +765,8 @@ out_nofix:
 out_teardown:
 	error = xchk_teardown(sc, error);
 out_sc:
-	xchk_stats_merge(mp, sm, error, &run);
+	if (error != -ENOENT)
+		xchk_stats_merge(mp, sm, &run);
 	kfree(sc);
 out:
 	trace_xchk_done(XFS_I(file_inode(file)), sm, error);
@@ -954,7 +955,7 @@ xfs_ioc_scrubv_metadata(
 	 * because each scrubber gets to decide its own strategy and return
 	 * values for getting an inode.
 	 */
-	if (head.svh_ino && head.svh_ino != I_INO(ip_in))
+	if (head.svh_ino && head.svh_ino != ip_in->i_ino)
 		handle_ip = xchk_scrubv_open_by_handle(mp, &head);
 
 	/* Run all the scrubbers. */

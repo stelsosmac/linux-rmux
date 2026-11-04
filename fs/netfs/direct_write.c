@@ -21,7 +21,7 @@ static void netfs_unbuffered_write_done(struct netfs_io_request *wreq)
 	/* Okay, declare that all I/O is complete. */
 	trace_netfs_rreq(wreq, netfs_rreq_trace_write_done);
 
-	if (wreq->transferred)
+	if (!wreq->error)
 		netfs_update_i_size(ictx, &ictx->inode, wreq->start, wreq->transferred);
 
 	if (wreq->origin == NETFS_DIO_WRITE &&
@@ -51,7 +51,7 @@ static void netfs_unbuffered_write_done(struct netfs_io_request *wreq)
 		wreq->iocb->ki_pos += written;
 		if (wreq->iocb->ki_complete) {
 			trace_netfs_rreq(wreq, netfs_rreq_trace_ki_complete);
-			wreq->iocb->ki_complete(wreq->iocb, written ?: wreq->error);
+			wreq->iocb->ki_complete(wreq->iocb, wreq->error ?: written);
 		}
 		wreq->iocb = VFS_PTR_POISON;
 	}
@@ -95,7 +95,7 @@ static int netfs_unbuffered_write(struct netfs_io_request *wreq)
 {
 	struct netfs_io_subrequest *subreq = NULL;
 	struct netfs_io_stream *stream = &wreq->io_streams[0];
-	int ret = 0;
+	int ret;
 
 	_enter("%llx", wreq->len);
 
@@ -110,11 +110,6 @@ static int netfs_unbuffered_write(struct netfs_io_request *wreq)
 		if (!subreq) {
 			netfs_prepare_write(wreq, stream, wreq->start + wreq->transferred);
 			subreq = stream->construct;
-			if (!subreq) {
-				wreq->error = -ENOMEM;
-				ret = -ENOMEM;
-				break;
-			}
 			stream->construct = NULL;
 		}
 
@@ -126,14 +121,8 @@ static int netfs_unbuffered_write(struct netfs_io_request *wreq)
 		}
 
 		iov_iter_truncate(&subreq->io_iter, wreq->len - wreq->transferred);
-		if (!iov_iter_count(&subreq->io_iter)) {
-			pr_warn("netfs: Unexpected zero-length iterator R=%08x\n",
-				wreq->debug_id);
-			__set_bit(NETFS_SREQ_FAILED, &subreq->flags);
-			netfs_write_subrequest_terminated(subreq, -EIO);
-			wreq->error = -EIO;
+		if (!iov_iter_count(&subreq->io_iter))
 			break;
-		}
 
 		subreq->len = netfs_limit_iter(&subreq->io_iter, 0,
 					       stream->sreq_max_len,
@@ -150,11 +139,13 @@ static int netfs_unbuffered_write(struct netfs_io_request *wreq)
 		if (test_bit(NETFS_SREQ_NEED_RETRY, &subreq->flags)) {
 			retry = true;
 		} else if (test_bit(NETFS_SREQ_FAILED, &subreq->flags)) {
-			wreq->error = subreq->error;
+			ret = subreq->error;
+			wreq->error = ret;
 			netfs_see_subrequest(subreq, netfs_sreq_trace_see_failed);
 			subreq = NULL;
 			break;
 		}
+		ret = 0;
 
 		if (!retry) {
 			netfs_unbuffered_write_collect(wreq, stream, subreq);
@@ -175,16 +166,13 @@ static int netfs_unbuffered_write(struct netfs_io_request *wreq)
 		 */
 		subreq->error = -EAGAIN;
 		trace_netfs_sreq(subreq, netfs_sreq_trace_retry);
-		if (subreq->transferred > 0) {
+		if (subreq->transferred > 0)
 			iov_iter_advance(&wreq->buffer.iter, subreq->transferred);
-			wreq->transferred += subreq->transferred;
-		}
 
 		if (stream->source == NETFS_UPLOAD_TO_SERVER &&
 		    wreq->netfs_ops->retry_request)
 			wreq->netfs_ops->retry_request(wreq, stream);
 
-		__clear_bit(NETFS_SREQ_MADE_PROGRESS, &subreq->flags);
 		__clear_bit(NETFS_SREQ_NEED_RETRY, &subreq->flags);
 		__clear_bit(NETFS_SREQ_BOUNDARY, &subreq->flags);
 		__clear_bit(NETFS_SREQ_FAILED, &subreq->flags);
@@ -198,10 +186,17 @@ static int netfs_unbuffered_write(struct netfs_io_request *wreq)
 
 		netfs_get_subrequest(subreq, netfs_sreq_trace_get_resubmit);
 
-		if (stream->prepare_write)
+		if (stream->prepare_write) {
 			stream->prepare_write(subreq);
-		__set_bit(NETFS_SREQ_IN_PROGRESS, &subreq->flags);
-		netfs_stat(&netfs_n_wh_retry_write_subreq);
+			__set_bit(NETFS_SREQ_IN_PROGRESS, &subreq->flags);
+			netfs_stat(&netfs_n_wh_retry_write_subreq);
+		} else {
+			struct iov_iter source;
+
+			netfs_reset_iter(subreq);
+			source = subreq->io_iter;
+			netfs_reissue_write(stream, subreq, &source);
+		}
 	}
 
 	netfs_unbuffered_write_done(wreq);
@@ -297,11 +292,11 @@ ssize_t netfs_unbuffered_write_iter_locked(struct kiocb *iocb, struct iov_iter *
 		ret = -EIOCBQUEUED;
 	} else {
 		ret = netfs_unbuffered_write(wreq);
-		if (wreq->transferred) {
+		if (ret < 0) {
+			_debug("begin = %zd", ret);
+		} else {
 			iocb->ki_pos += wreq->transferred;
-			ret = wreq->transferred;
-		} else if (wreq->error) {
-			ret = wreq->error;
+			ret = wreq->transferred ?: wreq->error;
 		}
 
 		netfs_put_request(wreq, netfs_rreq_trace_put_complete);
@@ -359,15 +354,6 @@ ssize_t netfs_unbuffered_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	ret = file_update_time(file);
 	if (ret < 0)
 		goto out;
-
-	if (iocb->ki_pos > i_size_read(inode)) {
-		ret = netfs_clear_stale_pre_isize(inode, i_size_read(inode),
-						  iocb->ki_pos,
-						  iocb->ki_flags & IOCB_NOWAIT);
-		if (ret < 0)
-			goto out;
-	}
-
 	if (iocb->ki_flags & IOCB_NOWAIT) {
 		/* We could block if there are any pages in the range. */
 		ret = -EAGAIN;

@@ -216,9 +216,6 @@ static ssize_t ovl_parse_param_split_lowerdirs(char *str)
 		if (*s == '\\') {
 			/* keep esc chars in split lowerdir */
 			*d++ = *s++;
-			/* A trailing backslash escapes nothing. */
-			if (!*s)
-				return -EINVAL;
 		} else if (*s == ':') {
 			bool next_colon = (*(s + 1) == ':');
 
