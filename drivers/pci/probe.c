@@ -2870,7 +2870,7 @@ static int only_one_child(struct pci_bus *bus)
  */
 int pci_scan_slot(struct pci_bus *bus, int devfn)
 {
-	struct pci_dev *dev;
+	struct pci_dev *dev = NULL;
 	int fn = 0, nr = 0;
 
 	u32 l;
@@ -2886,7 +2886,8 @@ int pci_scan_slot(struct pci_bus *bus, int devfn)
 	}
 
 	do {
-		if (PCI_SLOT(devfn) != AEOLIA_SLOT_NUM &&
+		/* fn == 0 was already checked above; avoid re-reading it */
+		if (fn > 0 && PCI_SLOT(devfn) != AEOLIA_SLOT_NUM &&
 		    pci_bus_read_dev_vendor_id(bus, devfn + fn, &l, 60*1000) &&
 		    (l & 0xffff) == PCI_VENDOR_ID_SONY) {
 				fn = next_fn(bus, dev, fn);

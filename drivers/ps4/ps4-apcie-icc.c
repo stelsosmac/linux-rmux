@@ -45,19 +45,6 @@ void icc_reboot(void);
 int apcie_icc_init(struct apcie_dev *sc);
 void apcie_icc_remove(struct apcie_dev *sc);
 
-#define ICC_IOCTL_TYPE	'I'
-
- struct icc_cmd {
- 	u8 major;
- 	u16 minor;
- 	void __user *data;
- 	u16 length;
- 	void __user *reply;
- 	u16 reply_length;
- };
-
-#define ICC_IOCTL_CMD _IOWR(ICC_IOCTL_TYPE, 1, struct icc_cmd)
-
 static u16 checksum(const void *p, int length)
 {
 	const u8 *pp = p;
@@ -303,6 +290,10 @@ int apcie_icc_cmd(u8 major, u16 minor, const void *data, u16 length,
 {
 	int ret;
 
+	if (!icc_sc && bpcie_status() > 0)
+		return bpcie_icc_cmd(major, minor, data, length, reply,
+				     reply_length);
+
 	mutex_lock(&icc_mutex);
 	if (!icc_sc) {
 		pr_err("icc: not ready\n");
@@ -395,15 +386,11 @@ void do_icc_init(void) {
 	u8 svc = 0x10;
 	u8 reply[0x30];
 	static const u8 led_config[] = {
-		3, 1, 0, 0,
-			0x10, 1, /* Blue: on */
-				2, 0xff, 2, 1, 0x00,
-			0x11, 1, /* White: off */
+		2, 1, 0, 0,
+			0x10, 1, /* Blue: off */
 				2, 0x00, 2, 1, 0x00,
-			0x02, 3, /* Orange: delay and pulse, loop forever */
-				1, 0x00, 4, 1, 0xbf,
-				2, 0xff, 5, 1, 0xff,
-				2, 0x00, 5, 1, 0xff,
+			0x11, 1, /* White: on */
+				2, 0xff, 2, 1, 0x00,
 	};
 	int ret;
 	// test: get FW version
@@ -431,6 +418,29 @@ void do_icc_init(void) {
 			 ret, reply[0], reply[1], reply[2], reply[3],
 			 reply[4], reply[5], reply[6], reply[7]);
 }
+
+static int __init ps4_led_boot_complete(void)
+{
+	static const u8 led_config[] = {
+		2, 1, 0, 0,
+			0x10, 1, /* Blue: on */
+				2, 0xff, 2, 1, 0x00,
+			0x11, 1, /* White: off */
+				2, 0x00, 2, 1, 0x00,
+	};
+	u8 reply[0x30];
+	int ret;
+
+	if (!icc_sc)
+		return 0;
+
+	ret = apcie_icc_cmd(9, 0x20, led_config, ARRAY_SIZE(led_config), reply, 0x30);
+	if (ret < 0)
+		pr_err("icc: boot-complete LED set failed: %d\n", ret);
+
+	return 0;
+}
+late_initcall(ps4_led_boot_complete);
 
 static void icc_shutdown(void)
 {
@@ -645,7 +655,7 @@ int apcie_icc_init(struct apcie_dev *sc)
 	}
 
 	ret = register_chrdev(0, "icc", &icc_fops);
-	if (ret) {
+	if (ret < 0) {
 		sc_warn("icc: register_chrdev failed: %d\n", ret);
 		kfree(ioctl_reply_buf);
 		kfree(ioctl_send_buf);

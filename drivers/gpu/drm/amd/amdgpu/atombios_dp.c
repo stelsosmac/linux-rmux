@@ -503,7 +503,6 @@ void amdgpu_atombios_dp_set_rx_power_state(struct drm_connector *connector,
 	}
 }
 
-/* PS4 CUH-11xx (MN86471A) GPU device ID — all other models use MN864729 */
 #define PCI_DEVICE_ID_CUH_11XX 0x9920
 
 struct amdgpu_atombios_dp_link_train_info {

@@ -37,24 +37,30 @@ static int ps4_cpufreq_target_index(struct cpufreq_policy *policy,
 {
 	u32 requested = ps4_freq_table[index].driver_data;
 	u64 val;
-	int i;
+	int i, cpu;
 
-	rdmsrq(MSR_AMD_PSTATE_CUR_LIMIT, val);
-	if (requested > (val & PSTATE_CURLIMIT_MASK))
+	rdmsrq_on_cpu(policy->cpu, MSR_AMD_PSTATE_CUR_LIMIT, &val);
+	if (requested < (val & PSTATE_CURLIMIT_MASK))
 		requested = val & PSTATE_CURLIMIT_MASK;
 
-	wrmsrq(MSR_AMD_PERF_CTL, requested & PSTATE_CMD_MASK);
+	for_each_cpu(cpu, policy->cpus)
+		wrmsrq_on_cpu(cpu, MSR_AMD_PERF_CTL, requested & PSTATE_CMD_MASK);
 
-	for (i = 0; i < 100; i++) {
-		rdmsrq(MSR_AMD_PERF_STATUS, val);
-		if ((val & PSTATE_STATUS_MASK) == requested)
-			return 0;
-		udelay(100);
+	for_each_cpu(cpu, policy->cpus) {
+		for (i = 0; i < 100; i++) {
+			rdmsrq_on_cpu(cpu, MSR_AMD_PERF_STATUS, &val);
+			if ((val & PSTATE_STATUS_MASK) == requested)
+				break;
+			udelay(100);
+		}
+		if (i == 100) {
+			pr_warn("ps4-cpufreq: cpu%d timed out transitioning to P%u\n",
+				cpu, requested);
+			return -EIO;
+		}
 	}
 
-	pr_warn("ps4-cpufreq: cpu%d timed out transitioning to P%u\n",
-		policy->cpu, requested);
-	return -EIO;
+	return 0;
 }
 
 static unsigned int ps4_cpufreq_get(unsigned int cpu)
@@ -80,11 +86,6 @@ static int ps4_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static struct freq_attr *ps4_cpufreq_attr[] = {
-	&cpufreq_freq_attr_scaling_available_freqs,
-	NULL,
-};
-
 static struct cpufreq_driver ps4_cpufreq_driver = {
 	.name = "ps4-cpufreq",
 	.flags = CPUFREQ_CONST_LOOPS,
@@ -92,21 +93,34 @@ static struct cpufreq_driver ps4_cpufreq_driver = {
 	.verify = cpufreq_generic_frequency_table_verify,
 	.target_index = ps4_cpufreq_target_index,
 	.get = ps4_cpufreq_get,
-	.attr = ps4_cpufreq_attr,
 };
 
 static int __init ps4_cpufreq_build_table(void)
 {
 	int i, n = 0;
 	u64 val;
+	unsigned int khz;
+	bool duplicate;
+	int j;
 
 	for (i = 0; i < PS4_NUM_PSTATES; i++) {
 		rdmsrq(MSR_AMD_PSTATE_DEF_BASE + i, val);
 		if (!(val & PSTATE_EN))
 			continue;
 
+		khz = pstate_to_khz(val);
+		duplicate = false;
+		for (j = 0; j < n; j++) {
+			if (ps4_freq_table[j].frequency == khz) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (duplicate)
+			continue;
+
 		ps4_freq_table[n].driver_data = i;
-		ps4_freq_table[n].frequency = pstate_to_khz(val);
+		ps4_freq_table[n].frequency = khz;
 		n++;
 	}
 	ps4_freq_table[n].driver_data = 0;

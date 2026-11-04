@@ -1997,11 +1997,11 @@ static const struct pci_device_id pciidlist[] = {
 	{ PCI_DEVICE(0x1002, 0x985D), .driver_data = CHIP_MULLINS|AMD_IS_MOBILITY|AMD_IS_APU },
 	{ PCI_DEVICE(0x1002, 0x985E), .driver_data = CHIP_MULLINS|AMD_IS_MOBILITY|AMD_IS_APU },
 	{ PCI_DEVICE(0x1002, 0x985F), .driver_data = CHIP_MULLINS|AMD_IS_MOBILITY|AMD_IS_APU },
-	/* Liverpool (PS4) */
+	/* Liverpool */
 	{ PCI_DEVICE(0x1002, 0x9920), .driver_data = CHIP_LIVERPOOL|AMD_IS_APU },
 	{ PCI_DEVICE(0x1002, 0x9922), .driver_data = CHIP_LIVERPOOL|AMD_IS_APU },
 	{ PCI_DEVICE(0x1002, 0x9923), .driver_data = CHIP_LIVERPOOL|AMD_IS_APU },
-	/* Gladius (PS4 Pro) */
+	/* Gladius */
 	{ PCI_DEVICE(0x1002, 0x9924), .driver_data = CHIP_GLADIUS|AMD_IS_APU },
 	/* topaz */
 	{ PCI_DEVICE(0x1002, 0x6900), .driver_data = CHIP_TOPAZ },

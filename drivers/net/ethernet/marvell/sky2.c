@@ -141,7 +141,6 @@ static const struct pci_device_id sky2_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL, 0x4382) }, /* 88E8079 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_AEOLIA_GBE) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BELIZE_GBE) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_SONY, PCI_DEVICE_ID_SONY_BAIKAL_GBE) },
 	{ 0 }
 };
 
@@ -3054,7 +3053,6 @@ static int sky2_poll(struct napi_struct *napi, int work_limit)
 	napi_complete_done(napi, work_done);
 	sky2_read32(hw, B0_Y2_SP_LISR);
 #ifdef CONFIG_X86_PS4
-	/* Aeolia: LISR read has no unmas side-effeectt; rearm via ICR */
 	sky2_write32(hw, AEOLIA_SP_ICR,1);
 #endif
 done:
@@ -3067,11 +3065,8 @@ static irqreturn_t sky2_intr(int irq, void *dev_id)
 	struct sky2_hw *hw = dev_id;
 	u32 status;
 #ifdef CONFIG_X86_PS4
-	/* Aeolia: mask on entry before any register read to close the
-	 * re-assertion race window. ISRC2 read has no mask side-effect. */
 	sky2_write32(hw, AEOLIA_SP_ICR, 2);
 #endif
-	/* Reading this masks interrupts as side effect (standard Yukon-2 only) */
 	status = sky2_read32(hw, B0_Y2_SP_ISRC2);
 	if (status == 0 || status == ~0) {
 		sky2_write32(hw, B0_Y2_SP_ICR, 2);

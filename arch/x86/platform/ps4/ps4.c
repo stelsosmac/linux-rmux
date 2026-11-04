@@ -30,6 +30,7 @@
 
 static bool is_ps4;
 bool apcie_initialized;
+bool bpcie_initialized;
 
 /*
  * The RTC is part of the Aeolia PCI device and will be implemented there as
@@ -52,9 +53,56 @@ int apcie_status(void)
 {
 	if (!is_ps4)
 		return -ENODEV;
-	return READ_ONCE(apcie_initialized);
+	return READ_ONCE(apcie_initialized) || READ_ONCE(bpcie_initialized);
 }
 EXPORT_SYMBOL_GPL(apcie_status);
+
+int bpcie_status(void)
+{
+	if (!is_ps4)
+		return -ENODEV;
+	return READ_ONCE(bpcie_initialized);
+}
+EXPORT_SYMBOL_GPL(bpcie_status);
+
+bool ps4_is_baikal(void)
+{
+	struct pci_dev *dev;
+	bool ret = false;
+
+	if (!is_ps4)
+		return false;
+
+	dev = pci_get_device(PCI_VENDOR_ID_SONY,
+			     PCI_DEVICE_ID_SONY_BAIKAL_ACPI, NULL);
+	if (dev) {
+		ret = true;
+		pci_dev_put(dev);
+	}
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ps4_is_baikal);
+
+static int ps4_baikal_cached = -1;
+
+int ps4_is_baikal_early(void)
+{
+	u32 id;
+	void *cfg;
+
+	if (!is_ps4)
+		return 0;
+
+	if (ps4_baikal_cached >= 0)
+		return ps4_baikal_cached;
+
+	cfg = phys_to_virt(0xf80a0000);
+	id = readl(cfg);
+
+	ps4_baikal_cached = ((id & 0xffff) == PCI_VENDOR_ID_SONY &&
+			     ((id >> 16) & 0xffff) == PCI_DEVICE_ID_SONY_BAIKAL_ACPI);
+	return ps4_baikal_cached;
+}
 
 void icc_reboot(void);
 

@@ -504,11 +504,6 @@ static int atihdmi_init(struct hda_codec *codec)
 					    ATI_MULTICHANNEL_MODE_SINGLE);
 	}
 
-	/* Liverpool/R6xx DP→HDMI bridge (Panasonic MN864729/MN86471A) requires
-	 * AC_DIG1_ENABLE set on all converters at init. The IEC958 gate defaults
-	 * off in the generic HDMI driver but the bridge does not forward audio
-	 * packets unless this bit is set. Confirmed on PS4 CUH-12xx (0x1002aa01 rev 0x100400).
-	 */
 	if (codec->core.vendor_id == 0x1002aa01) {
 		int cvt_idx;
 		for (cvt_idx = 0; cvt_idx < spec->num_cvts; cvt_idx++) {

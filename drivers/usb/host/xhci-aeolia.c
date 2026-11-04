@@ -41,15 +41,19 @@ static const struct xhci_driver_overrides xhci_aeolia_overrides __initconst = {
 static void xhci_aeolia_quirks(struct device *dev, struct xhci_hcd *xhci)
 {
 	/*
-	 * Do not try to enable MSIs, we provide the MSIs ourselves
 	 * Do not touch DMA mask, we need a custom one
 	 */
-	xhci->quirks |= XHCI_PLAT | XHCI_PLAT_DMA;
+	xhci->quirks |= XHCI_PLAT_DMA;
 }
 
 /* called during probe() after chip reset completes */
 static int xhci_aeolia_setup(struct usb_hcd *hcd)
 {
+	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+
+	/* imod_interval is the interrupt moderation value in nanoseconds. */
+	xhci->imod_interval = 40000;
+
 	return xhci_gen_setup(hcd, xhci_aeolia_quirks);
 }
 
@@ -63,7 +67,6 @@ static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 	int irq = (axhci->nr_irqs > 1) ? (dev->irq + index) : dev->irq;
 
 	dev_dbg(&dev->dev, "xhci_aeolia_probe_one %d\n", index);
-	/* hardware stabilisation, see git log */
 	usleep_range(200, 500);
 
 	hcd = usb_create_hcd(driver, &dev->dev, pci_name(dev));
@@ -101,6 +104,14 @@ static int xhci_aeolia_probe_one(struct pci_dev *dev, int index)
 	retval = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (retval)
 		goto put_usb3_hcd;
+
+	{
+		struct usb_hcd *usb3_hcd = xhci_get_usb3_hcd(xhci);
+
+		if (usb3_hcd && HCC_MAX_PSA(xhci->hcc_params) >= 4 &&
+		    !(xhci->quirks & XHCI_BROKEN_STREAMS))
+			usb3_hcd->can_do_streams = 1;
+	}
 
 	retval = usb_add_hcd(xhci->shared_hcd, irq, IRQF_SHARED);
 	if (retval)
@@ -212,20 +223,26 @@ static int ahci_init_one(struct pci_dev *pdev)
 		goto release_mem_region;
 	}
 
-	r_mem = kzalloc(sizeof(*r_mem), GFP_KERNEL);
-	if (r_mem) {
-		r_mem->r_bustag = 1;//mem
-		r_mem->r_bushandle = hpriv->mmio;
+	if (pdev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI) {
+		rc = bpcie_baikal_sata_phy_init(pdev, hpriv->mmio);
+		if (rc)
+			goto unmap_registers;
+	} else {
+		r_mem = kzalloc(sizeof(*r_mem), GFP_KERNEL);
+		if (r_mem) {
+			r_mem->r_bustag = 1;//mem
+			r_mem->r_bushandle = hpriv->mmio;
 
-		ctlr = kzalloc(sizeof(*ctlr), GFP_KERNEL);
-		if (ctlr) {
-			ctlr->r_mem = r_mem;
-			ctlr->dev_id = 0; //or 0x90ca104d;
-			ctlr->trace_len = 6;
-			bpcie_sata_phy_init(&pdev->dev, ctlr);
-			kfree(ctlr);
+			ctlr = kzalloc(sizeof(*ctlr), GFP_KERNEL);
+			if (ctlr) {
+				ctlr->r_mem = r_mem;
+				ctlr->dev_id = 0; //or 0x90ca104d;
+				ctlr->trace_len = 6;
+				bpcie_sata_phy_init(&pdev->dev, ctlr);
+				kfree(ctlr);
+			}
+			kfree(r_mem);
 		}
-		kfree(r_mem);
 	}
 	device_wakeup_enable(&pdev->dev);
 
@@ -286,6 +303,15 @@ static int ahci_init_one(struct pci_dev *pdev)
 	else
 		dev_info(&pdev->dev, "SSS flag set, parallel bus scan disabled\n");
 
+	if (!(hpriv->cap & HOST_CAP_PART))
+		host->flags |= ATA_HOST_NO_PART;
+
+	if (!(hpriv->cap & HOST_CAP_SSC))
+		host->flags |= ATA_HOST_NO_SSC;
+
+	if (!(hpriv->cap2 & HOST_CAP2_SDS))
+		host->flags |= ATA_HOST_NO_DEVSLP;
+
 	if (pi.flags & ATA_FLAG_EM)
 		ahci_reset_em(host);
 
@@ -329,8 +355,8 @@ static int ahci_init_one(struct pci_dev *pdev)
 	return 0;
 
 	host_deactivate:
-		ata_host_detach(host);
 	release_host:
+		ata_host_detach(host);
 	unmap_registers:
 		iounmap(hpriv->mmio);
 	release_mem_region:
@@ -378,7 +404,8 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 	}
 	pci_set_drvdata(dev, axhci);
 
-	axhci->nr_irqs = retval = apcie_assign_irqs(dev, NR_DEVICES);
+	axhci->nr_irqs = retval = (dev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI) ?
+		bpcie_assign_irqs(dev, NR_DEVICES) : apcie_assign_irqs(dev, NR_DEVICES);
 	if (retval < 0) {
 		goto free_axhci;
 	}
@@ -410,6 +437,8 @@ static int xhci_aeolia_probe(struct pci_dev *dev, const struct pci_device_id *id
 		retval = xhci_aeolia_probe_one(dev, idx);
 		if (retval)
 			goto remove_hcds;
+		if (dev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI)
+			msleep(20);
 	}
 
 	return 0;
@@ -420,7 +449,10 @@ remove_hcds:
 	if (ahci_started)
 		ahci_remove_one(dev);
 free_irqs:
-	apcie_free_irqs(dev->irq, axhci->nr_irqs);
+	if (dev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI)
+		bpcie_free_irqs(dev->irq, axhci->nr_irqs);
+	else
+		apcie_free_irqs(dev->irq, axhci->nr_irqs);
 free_axhci:
 	pci_set_drvdata(dev, NULL);
 	kfree(axhci);
@@ -448,7 +480,10 @@ static void xhci_aeolia_remove(struct pci_dev *dev)
 			xhci_aeolia_remove_one(dev, idx);
 	}
 
-	apcie_free_irqs(dev->irq, axhci->nr_irqs);
+	if (dev->device == PCI_DEVICE_ID_SONY_BAIKAL_XHCI)
+		bpcie_free_irqs(dev->irq, axhci->nr_irqs);
+	else
+		apcie_free_irqs(dev->irq, axhci->nr_irqs);
 
 	pci_set_drvdata(dev, NULL);
 	kfree(axhci);
@@ -457,13 +492,6 @@ static void xhci_aeolia_remove(struct pci_dev *dev)
 }
 
 static void xhci_hcd_pci_shutdown(struct pci_dev *dev){
-
-	// We want to use the normal shutdown if we aren't belize
-	if (dev->device != PCI_DEVICE_ID_SONY_BELIZE_XHCI)
-	{
-		usb_hcd_pci_shutdown(dev);
-		return;
-	}
 
 	struct aeolia_xhci *axhci;
 	struct usb_hcd	   *hcd;
@@ -474,16 +502,15 @@ static void xhci_hcd_pci_shutdown(struct pci_dev *dev){
 		return;
 
 	for (idx = 0; idx < NR_DEVICES; idx++) {
-		if(dev->device != PCI_DEVICE_ID_SONY_AEOLIA_XHCI) {
-			if(idx != 1) {
-				hcd = axhci->hcd[idx];
-				if (hcd) {
-					if (test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags) && hcd->driver->shutdown) {
-						hcd->driver->shutdown(hcd);
-						if (usb_hcd_is_primary_hcd(hcd) && hcd->irq > 0)
-							free_irq(hcd->irq, hcd);
-					}
-				}
+		/* As in probe: Belize and Baikal have no host at index 1 */
+		if (dev->device != PCI_DEVICE_ID_SONY_AEOLIA_XHCI && idx == 1)
+			continue;
+		hcd = axhci->hcd[idx];
+		if (hcd) {
+			if (test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags) && hcd->driver->shutdown) {
+				hcd->driver->shutdown(hcd);
+				if (usb_hcd_is_primary_hcd(hcd) && hcd->irq > 0)
+					free_irq(hcd->irq, hcd);
 			}
 		}
 	}

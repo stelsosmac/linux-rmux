@@ -718,13 +718,6 @@ enum drm_connector_status radeon_ps4_bridge_detect(struct drm_connector *connect
 
 	DRM_DEBUG_KMS("TMONREG=0x%02x dpcd_ret=%d\n", reg, dpcd_ret);
 
-	/*
-	 * TMONREG_HPD latches high on first connection and is never cleared
-	 * by the Aeolia ICC proxy when the cable is unplugged. Use the DPCD
-	 * AUX transaction result as the authoritative connection indicator:
-	 * DPCD fails immediately with no cable (no DP receiver to respond),
-	 * so it is a reliable live signal unlike the latched HPD bit.
-	 */
 	if ((reg & TMONREG_HPD) && dpcd_ret == 0)
 		return connector_status_connected;
 	else
@@ -773,11 +766,6 @@ int radeon_ps4_bridge_register(struct drm_connector *connector,
 	mn_bridge->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
 	mn_bridge->bridge.funcs = &radeon_ps4_bridge_funcs;
 
-	/*
-	 * Enable DRM connection polling. Without HPD interrupts from Aeolia,
-	 * polling is the only way the kernel will call detect() automatically
-	 * and trigger a modeset when the cable is replugged.
-	 */
 	connector->polled = DRM_CONNECTOR_POLL_CONNECT |
 			    DRM_CONNECTOR_POLL_DISCONNECT;
 

@@ -44,7 +44,7 @@
 #include "dce_v8_0.h"
 #include "gfx_v7_0.h"
 #include "cik_sdma.h"
-#include "liverpool_clk.h"
+#include "liverpool_smu.h"
 #include "uvd_v4_2.h"
 #include "vce_v2_0.h"
 #include "cik_dpm.h"
@@ -2200,11 +2200,6 @@ static void cik_program_aspm_ps4(struct amdgpu_device *adev)
 	if (pci_is_root_bus(adev->pdev->bus))
 		return;
 
-	/*
-	 * Liverpool/Gladius are console APUs. Favor deterministic latency over
-	 * PCIe/BIF low-power entry and autonomous link-management behavior.
-	 * goyim machine
-	 */
 	orig = data = RREG32_PCIE(ixPCIE_LC_CNTL);
 	data &= ~(PCIE_LC_CNTL__LC_L0S_INACTIVITY_MASK |
 		  PCIE_LC_CNTL__LC_L1_INACTIVITY_MASK);
@@ -2230,7 +2225,6 @@ static void cik_program_aspm_ps4(struct amdgpu_device *adev)
 	if (orig != data)
 		WREG32_PCIE(ixPCIE_CNTL2, data);
 
-	/* wsp */
 	orig = data = RREG32_PCIE(ixPCIE_LC_LINK_WIDTH_CNTL);
 	data &= ~PCIE_LC_LINK_WIDTH_CNTL__LC_DYN_LANES_PWR_STATE_MASK;
 	if (orig != data)
@@ -2501,11 +2495,6 @@ static int cik_common_early_init(struct amdgpu_ip_block *ip_block)
 			adev->external_rev_id = adev->rev_id + 0xa1;
 		break;
 		case CHIP_LIVERPOOL:
-			/*
-			 * Favor sustained throughput and wake latency on PS4 over
-			 * deeper GFX/SDMA low-power states. Keep the lighter
-			 * clock-gating paths, but leave the LS paths disabled.
-			 */
 			adev->cg_flags =
 				AMD_CG_SUPPORT_GFX_MGCG |
 				/*AMD_CG_SUPPORT_GFX_CGCG |*/
@@ -2529,11 +2518,6 @@ static int cik_common_early_init(struct amdgpu_ip_block *ip_block)
 			break;
 
 		case CHIP_GLADIUS:
-			/*
-			 * Same latency-oriented policy as Liverpool: avoid the
-			 * deeper sleep states that can add wakeup overhead while
-			 * keeping the regular clock-gating paths enabled.
-			 */
 			adev->cg_flags =
 				AMD_CG_SUPPORT_GFX_MGCG |
 				AMD_CG_SUPPORT_GFX_CGCG |
@@ -2571,26 +2555,12 @@ static int cik_common_hw_init(struct amdgpu_ip_block *ip_block)
 	cik_init_golden_registers(adev);
 	/* enable pcie gen2/3 link */
 	cik_pcie_gen3_enable(adev);
-	/* Use a PS4-specific low-latency PCIe policy for Liverpool/Gladius. negrai pardavimui */
 	if (adev->asic_type == CHIP_LIVERPOOL ||
 	    adev->asic_type == CHIP_GLADIUS)
 		cik_program_aspm_ps4(adev);
 	else
 		cik_program_aspm(adev);
 
-	if (adev->asic_type == CHIP_LIVERPOOL ||
-	    adev->asic_type == CHIP_GLADIUS)
-		liverpool_clk_force_max(adev);
-
-	/*
-	 * PS4 APUs have no AtomBIOS to populate default clock values.
-	 * Memory clock is fixed by firmware at boot (no MCLK DVFS) and
-	 * SCLK is forced to max above.  Set the defaults so userspace
-	 * queries (AMDGPU_INFO) report correct values.
-	 *
-	 * Liverpool: SCLK 800 MHz, MCLK 1375 MHz (GDDR5 5500 MT/s)
-	 * Gladius:   SCLK 911 MHz, MCLK 1700 MHz (GDDR5 6800 MT/s)
-	 */
 	if (adev->asic_type == CHIP_LIVERPOOL) {
 		adev->clock.default_sclk = 80000;
 		adev->clock.default_mclk = 137500;
@@ -2598,6 +2568,10 @@ static int cik_common_hw_init(struct amdgpu_ip_block *ip_block)
 		adev->clock.default_sclk = 91100;
 		adev->clock.default_mclk = 170000;
 	}
+
+	if (adev->asic_type == CHIP_LIVERPOOL ||
+	    adev->asic_type == CHIP_GLADIUS)
+		liverpool_smu_sysfs_init(adev);
 
 	return 0;
 }

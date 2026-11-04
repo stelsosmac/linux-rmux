@@ -5528,7 +5528,7 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 	/*
 	 * Set dma_mask and coherent_dma_mask to 64-bits if xHC supports
 	 * 64-bit addressing, unless a controller-specific quirk callback
-	 * limits the usable address width. PS4 (XHCI_PLAT_DMA) sets its own masks.
+	 * limits the usable address width.
 	 */
 	if (!(xhci->quirks & XHCI_PLAT_DMA)) {
 		if ((xhci->hcc_params & HCC_64BIT_ADDR) &&
