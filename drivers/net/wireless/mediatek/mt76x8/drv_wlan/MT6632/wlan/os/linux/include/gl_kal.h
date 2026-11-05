@@ -689,7 +689,18 @@ static inline void kalCfg80211ScanDone(struct cfg80211_scan_request *request,
 
 /* string operation */
 #define kalStrCpy(dest, src)                        strcpy(dest, src)
-#define kalStrnCpy(dest, src, n)                    strncpy(dest, src, n)
+/* strncpy() was removed in 7.3: same behaviour (copy up to n bytes, zero-fill the rest, no forced NUL). */
+static inline char *kal_strncpy(char *dest, const char *src, size_t n)
+{
+	size_t i = 0;
+
+	for (; i < n && src[i]; i++)
+		dest[i] = src[i];
+	for (; i < n; i++)
+		dest[i] = '\0';
+	return dest;
+}
+#define kalStrnCpy(dest, src, n)                    kal_strncpy(dest, src, n)
 #define kalStrCmp(ct, cs)                           strcmp(ct, cs)
 #define kalStrnCmp(ct, cs, n)                       strncmp(ct, cs, n)
 #define kalStrChr(s, c)                             strchr(s, c)

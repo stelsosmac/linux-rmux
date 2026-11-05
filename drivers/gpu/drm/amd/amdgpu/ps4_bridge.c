@@ -1336,7 +1336,9 @@ static struct drm_bridge_funcs ps4_bridge_funcs = {
 	.atomic_post_disable = ps4_bridge_post_disable,
 	.attach = ps4_bridge_attach,
 	.mode_set = ps4_bridge_mode_set,
-	.atomic_reset = drm_atomic_helper_bridge_reset,
+	/* 7.3 creates a bridge state in drm_bridge_attach() and calls all three: without
+	 * them a NULL atomic_create_state is called during dce_v8_0_sw_init(). */
+	.atomic_create_state = drm_atomic_helper_bridge_create_state,
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
 };
