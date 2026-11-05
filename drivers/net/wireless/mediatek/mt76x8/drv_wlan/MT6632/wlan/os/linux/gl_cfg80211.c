@@ -1912,7 +1912,9 @@ int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,
 		DBGLOG(INIT, INFO, "--> %s()\n", __func__);
 #endif
 
-		*cookie = prGlueInfo->u8Cookie++;
+		if (*cookie == 0) /* Linux 7.3+: cfg80211 provides the cookie */
+
+			*cookie = prGlueInfo->u8Cookie++;
 
 		prMsgChnlReq = cnmMemAlloc(prGlueInfo->prAdapter, RAM_TYPE_MSG, sizeof(MSG_REMAIN_ON_CHANNEL_T));
 
@@ -2026,7 +2028,9 @@ int mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 		prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 		ASSERT(prGlueInfo);
 
-		*cookie = prGlueInfo->u8Cookie++;
+		if (*cookie == 0) /* Linux 7.3+: cfg80211 provides the cookie */
+
+			*cookie = prGlueInfo->u8Cookie++;
 
 		/* Channel & Channel Type & Wait time are ignored. */
 		prMsgTxReq = cnmMemAlloc(prGlueInfo->prAdapter, RAM_TYPE_MSG, sizeof(MSG_MGMT_TX_REQUEST_T));
@@ -2096,7 +2100,9 @@ int mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 		prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 		ASSERT(prGlueInfo);
 
-		*cookie = prGlueInfo->u8Cookie++;
+		if (*cookie == 0) /* Linux 7.3+: cfg80211 provides the cookie */
+
+			*cookie = prGlueInfo->u8Cookie++;
 
 		/* Channel & Channel Type & Wait time are ignored. */
 		prMsgTxReq = cnmMemAlloc(prGlueInfo->prAdapter, RAM_TYPE_MSG, sizeof(MSG_MGMT_TX_REQUEST_T));
@@ -4007,4 +4013,23 @@ int mtk_cfg80211_suspend(struct wiphy *wiphy, struct cfg80211_wowlan *wow)
 		return -EINVAL;
 	}
 	return 0;
+}
+
+
+/* Linux 7.3 cfg80211 passes the cookie in instead of getting it back. */
+int mtk_cfg80211_remain_on_channel_v73(struct wiphy *wiphy, struct wireless_dev *wdev,
+				       struct ieee80211_channel *chan, unsigned int duration,
+				       u64 cookie, const u8 *rx_addr)
+{
+	u64 c = cookie;
+
+	return mtk_cfg80211_remain_on_channel(wiphy, wdev, chan, duration, &c);
+}
+
+int mtk_cfg80211_mgmt_tx_v73(struct wiphy *wiphy, struct wireless_dev *wdev,
+			     struct cfg80211_mgmt_tx_params *params, u64 cookie)
+{
+	u64 c = cookie;
+
+	return mtk_cfg80211_mgmt_tx(wiphy, wdev, params, &c);
 }

@@ -2129,7 +2129,8 @@ int mtk_p2p_cfg80211_remain_on_channel(struct wiphy *wiphy,
 		prGlueInfo = *((P_GLUE_INFO_T *) wiphy_priv(wiphy));
 		prGlueP2pDevInfo = prGlueInfo->prP2PDevInfo;
 
-		*cookie = prGlueP2pDevInfo->u8Cookie++;
+		if (*cookie == 0)
+			*cookie = prGlueP2pDevInfo->u8Cookie++;
 
 		prMsgChnlReq = cnmMemAlloc(prGlueInfo->prAdapter, RAM_TYPE_MSG, sizeof(MSG_P2P_CHNL_REQUEST_T));
 
@@ -2234,7 +2235,8 @@ int mtk_p2p_cfg80211_mgmt_tx(struct wiphy *wiphy,
 			}
 		}
 		/* The owner of this function please check following line*/
-		*cookie = prGlueInfo->u8Cookie++;
+		if (*cookie == 0) /* Linux 7.3+: cfg80211 provides the cookie */
+			*cookie = prGlueInfo->u8Cookie++;
 
 		/* Channel & Channel Type & Wait time are ignored. */
 		prMsgTxReq = cnmMemAlloc(prGlueInfo->prAdapter, RAM_TYPE_MSG, sizeof(MSG_P2P_MGMT_TX_REQUEST_T));
@@ -2343,7 +2345,8 @@ int mtk_p2p_cfg80211_mgmt_tx(struct wiphy *wiphy,
 			}
 		}
 
-		*cookie = prGlueP2pDevInfo->u8Cookie++;
+		if (*cookie == 0)
+			*cookie = prGlueP2pDevInfo->u8Cookie++;
 
 		/* Channel & Channel Type & Wait time are ignored. */
 		prMsgTxReq = cnmMemAlloc(prGlueInfo->prAdapter, RAM_TYPE_MSG, sizeof(MSG_P2P_MGMT_TX_REQUEST_T));
@@ -3818,3 +3821,22 @@ nla_put_failure:
 #endif
 
 #endif /* CFG_ENABLE_WIFI_DIRECT && CFG_ENABLE_WIFI_DIRECT_CFG_80211 */
+
+
+/* Linux 7.3 cfg80211 passes the cookie in instead of getting it back. */
+int mtk_p2p_cfg80211_remain_on_channel_v73(struct wiphy *wiphy, struct wireless_dev *wdev,
+					   struct ieee80211_channel *chan, unsigned int duration,
+					   u64 cookie, const u8 *link_addr)
+{
+	u64 c = cookie;
+
+	return mtk_p2p_cfg80211_remain_on_channel(wiphy, wdev, chan, duration, &c);
+}
+
+int mtk_p2p_cfg80211_mgmt_tx_v73(struct wiphy *wiphy, struct wireless_dev *wdev,
+				 struct cfg80211_mgmt_tx_params *params, u64 cookie)
+{
+	u64 c = cookie;
+
+	return mtk_p2p_cfg80211_mgmt_tx(wiphy, wdev, params, &c);
+}

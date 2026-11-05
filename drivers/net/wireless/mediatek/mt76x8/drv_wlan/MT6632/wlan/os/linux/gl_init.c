@@ -399,9 +399,9 @@ static struct cfg80211_ops mtk_wlan_ops = {
 	.assoc = mtk_cfg80211_assoc,
 
 	/* Action Frame TX/RX */
-	.remain_on_channel = mtk_cfg80211_remain_on_channel,
+	.remain_on_channel = mtk_cfg80211_remain_on_channel_v73,
 	.cancel_remain_on_channel = mtk_cfg80211_cancel_remain_on_channel,
-	.mgmt_tx = mtk_cfg80211_mgmt_tx,
+	.mgmt_tx = mtk_cfg80211_mgmt_tx_v73,
 	/* .mgmt_tx_cancel_wait        = mtk_cfg80211_mgmt_tx_cancel_wait, */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0))
 	.update_mgmt_frame_registrations = mtk_cfg80211_mgmt_frame_register,
