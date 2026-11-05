@@ -338,6 +338,7 @@ struct dualsense_output_report {
 #define DS4_INPUT_REPORT_BT_MINIMAL_SIZE	10
 #define DS4_INPUT_REPORT_BT			0x11
 #define DS4_INPUT_REPORT_BT_SIZE		78
+#define DS4_INPUT_REPORT_BT_AUDIO_LAST		0x19
 #define DS4_OUTPUT_REPORT_USB			0x05
 #define DS4_OUTPUT_REPORT_USB_SIZE		32
 #define DS4_OUTPUT_REPORT_BT			0x11
@@ -2397,6 +2398,18 @@ static int dualshock4_parse_report(struct ps_device *ps_dev, struct hid_report *
 	int battery_status, i, j;
 	u16 sensor_timestamp;
 	bool is_minimal = false;
+
+	/*
+	 * On Bluetooth the DualShock 4 also sends input reports 0x11..0x19 that carry
+	 * headset microphone audio (SBC) instead of controller state: bit 7 of byte 1
+	 * is clear in those, and 0x12..0x19 never carry state we parse here. Pass them
+	 * through untouched (return 0) so they reach hidraw, where userspace audio
+	 * daemons pick them up, instead of dropping them as "Unhandled reportID".
+	 */
+	if (hdev->bus == BUS_BLUETOOTH && report->id >= DS4_INPUT_REPORT_BT &&
+	    report->id <= DS4_INPUT_REPORT_BT_AUDIO_LAST &&
+	    (report->id != DS4_INPUT_REPORT_BT || (size >= 2 && !(data[1] & 0x80))))
+		return 0;
 
 	/*
 	 * DualShock4 in USB uses the full HID report for reportID 1, but

@@ -3094,6 +3094,7 @@ static void __init free_iommu_resources(void)
 	free_pci_segments();
 }
 
+#ifndef CONFIG_X86_PS4 // TODO this should detect ps4-ness at runtime
 static bool __init check_sb_ioapic(int devid)
 {
 	u8 bus = PCI_BUS_NUM(devid);
@@ -3182,6 +3183,7 @@ out:
 
 	return ret;
 }
+#endif
 
 static void __init free_dma_resources(void)
 {
@@ -3312,8 +3314,10 @@ static int __init early_amd_iommu_init(void)
 	if (!is_kdump_kernel() || amd_iommu_disabled)
 		disable_iommus();
 
+	#ifndef CONFIG_X86_PS4
 	if (amd_iommu_irq_remap)
 		amd_iommu_irq_remap = check_ioapic_information();
+	#endif
 
 	if (amd_iommu_irq_remap) {
 		struct amd_iommu_pci_seg *pci_seg;
