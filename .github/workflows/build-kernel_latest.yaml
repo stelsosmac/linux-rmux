@@ -39,7 +39,7 @@ jobs:
   build:
     permissions:
       contents: read
-    runs-on: ${{ (github.event_name == 'workflow_dispatch' && inputs.runner == 'Self-hosted-PS5') && fromJSON('["self-hosted", "ps5"]') || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'workflow_dispatch' && inputs.runner == 'Self-hosted-PS5') && fromJSON('["self-hosted", "ps5"]') || 'ubuntu-24.04' }}
 
     steps:
       - name: Set up cache env vars
