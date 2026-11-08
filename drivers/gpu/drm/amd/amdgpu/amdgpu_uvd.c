@@ -64,6 +64,7 @@
 #endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
 #define FIRMWARE_BONAIRE	"amdgpu/bonaire_uvd.bin"
+#define FIRMWARE_LIVERPOOL	"amdgpu/liverpool_uvd.bin"	/* the PS4 file is byte-identical to bonaire_uvd.bin */
 #define FIRMWARE_KABINI	"amdgpu/kabini_uvd.bin"
 #define FIRMWARE_KAVERI	"amdgpu/kaveri_uvd.bin"
 #define FIRMWARE_HAWAII	"amdgpu/hawaii_uvd.bin"
@@ -116,6 +117,7 @@ MODULE_FIRMWARE(FIRMWARE_OLAND);
 #endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
 MODULE_FIRMWARE(FIRMWARE_BONAIRE);
+MODULE_FIRMWARE(FIRMWARE_LIVERPOOL);
 MODULE_FIRMWARE(FIRMWARE_KABINI);
 MODULE_FIRMWARE(FIRMWARE_KAVERI);
 MODULE_FIRMWARE(FIRMWARE_HAWAII);
@@ -210,6 +212,10 @@ int amdgpu_uvd_sw_init(struct amdgpu_device *adev)
 #ifdef CONFIG_DRM_AMDGPU_CIK
 	case CHIP_BONAIRE:
 		fw_name = FIRMWARE_BONAIRE;
+		break;
+	case CHIP_LIVERPOOL:
+	case CHIP_GLADIUS:
+		fw_name = FIRMWARE_LIVERPOOL;
 		break;
 	case CHIP_KABINI:
 		fw_name = FIRMWARE_KABINI;

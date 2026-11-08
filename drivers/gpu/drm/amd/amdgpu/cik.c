@@ -45,6 +45,10 @@
 #include "gfx_v7_0.h"
 #include "cik_sdma.h"
 #include "liverpool_smu.h"
+
+static int amdgpu_ps4_uvd;
+module_param_named(ps4_uvd, amdgpu_ps4_uvd, int, 0444);
+MODULE_PARM_DESC(ps4_uvd, "PS4 (Liverpool/Gladius): enable the UVD video decoder (1 = on, 0 = off, default)");
 #include "uvd_v4_2.h"
 #include "vce_v2_0.h"
 #include "cik_dpm.h"
@@ -2724,7 +2728,9 @@ int cik_set_ip_blocks(struct amdgpu_device *adev)
 			amdgpu_device_ip_block_add(adev, &dce_v8_1_ip_block);
 		amdgpu_device_ip_block_add(adev, &gfx_v7_1_ip_block);
 		amdgpu_device_ip_block_add(adev, &cik_sdma_ip_block);
-		/*amdgpu_device_ip_block_add(adev, &uvd_v4_2_ip_block)*/;
+		/* PS4: the UVD video decoder only with amdgpu.ps4_uvd=1, so a failing decoder cannot black out boots without it */
+		if (amdgpu_ps4_uvd)
+			amdgpu_device_ip_block_add(adev, &uvd_v4_2_ip_block);
 		/*amdgpu_device_ip_block_add(adev, &vce_v2_0_ip_block)*/;
 		break;
 	case CHIP_GLADIUS:
@@ -2742,7 +2748,9 @@ int cik_set_ip_blocks(struct amdgpu_device *adev)
 		amdgpu_device_ip_block_add(adev, &dce_v8_1_ip_block);
 		amdgpu_device_ip_block_add(adev, &gfx_v7_1_ip_block);
 		amdgpu_device_ip_block_add(adev, &cik_sdma_ip_block);
-		/*amdgpu_device_ip_block_add(adev, &uvd_v4_2_ip_block)*/;
+		/* PS4: the UVD video decoder only with amdgpu.ps4_uvd=1, so a failing decoder cannot black out boots without it */
+		if (amdgpu_ps4_uvd)
+			amdgpu_device_ip_block_add(adev, &uvd_v4_2_ip_block);
 		/*amdgpu_device_ip_block_add(adev, &vce_v2_0_ip_block)*/;
 		break;
 	default:
