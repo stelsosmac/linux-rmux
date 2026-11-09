@@ -46,7 +46,7 @@
 #include "cik_sdma.h"
 #include "liverpool_smu.h"
 
-static int amdgpu_ps4_uvd;
+int amdgpu_ps4_uvd;	/* also read by uvd_v4_2.c */
 module_param_named(ps4_uvd, amdgpu_ps4_uvd, int, 0444);
 MODULE_PARM_DESC(ps4_uvd, "PS4 (Liverpool/Gladius): enable the UVD video decoder (1 = on, 0 = off, default)");
 #include "uvd_v4_2.h"

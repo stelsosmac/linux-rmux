@@ -39,6 +39,15 @@
 #include "smu/smu_7_0_1_d.h"
 #include "smu/smu_7_0_1_sh_mask.h"
 
+/* PS4 (Liverpool/Gladius): amdgpu.ps4_uvd=1 enables UVD there (cik.c). */
+extern int amdgpu_ps4_uvd;
+
+static bool uvd_v4_2_is_ps4(struct amdgpu_device *adev)
+{
+	return amdgpu_ps4_uvd &&
+	       (adev->asic_type == CHIP_LIVERPOOL || adev->asic_type == CHIP_GLADIUS);
+}
+
 static void uvd_v4_2_mc_resume(struct amdgpu_device *adev);
 static void uvd_v4_2_set_ring_funcs(struct amdgpu_device *adev);
 static void uvd_v4_2_set_irq_funcs(struct amdgpu_device *adev);
@@ -94,8 +103,12 @@ static int uvd_v4_2_early_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
 
-	/* UVD doesn't work without DPM, it needs DPM to ungate it. */
-	if (!amdgpu_dpm)
+	/* UVD doesn't work without DPM, it needs DPM to ungate it.
+	 * PS4: there is no DPM driver and amdgpu.dpm=1 hangs the console, but with dpm=0 the UVD
+	 * registers read real values (the block is powered) and the non-DPM path in begin_use
+	 * (set_uvd_clocks, PGFSM ungate, uvd_v4_2_start) does the rest.
+	 */
+	if (!amdgpu_dpm && !uvd_v4_2_is_ps4(adev))
 		return -ENOENT;
 
 	adev->uvd.num_uvd_inst = 1;
@@ -163,6 +176,11 @@ static int uvd_v4_2_hw_init(struct amdgpu_ip_block *ip_block)
 	uint32_t tmp;
 	int r;
 
+	if (uvd_v4_2_is_ps4(adev))
+		dev_info(adev->dev, "PS4 UVD: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x\n",
+			 RREG32(mmUVD_STATUS), RREG32(mmUVD_SOFT_RESET),
+			 RREG32(mmUVD_VCPU_CNTL), RREG32(mmUVD_LMI_STATUS));
+
 	uvd_v4_2_enable_mgcg(adev, true);
 	amdgpu_asic_set_uvd_clocks(adev, 10000, 10000);
 
@@ -198,8 +216,14 @@ static int uvd_v4_2_hw_init(struct amdgpu_ip_block *ip_block)
 	amdgpu_ring_commit(ring);
 
 done:
-	if (!r)
+	if (!r) {
 		drm_info(adev_to_drm(adev), "UVD initialized successfully.\n");
+	} else if (uvd_v4_2_is_ps4(adev)) {
+		/* Never take the whole GPU down for the decoder on the PS4: go on without it. */
+		dev_warn(adev->dev, "PS4 UVD: failed to start (%d), going on without the video decoder\n", r);
+		ring->sched.ready = false;
+		return 0;
+	}
 
 	return r;
 }
