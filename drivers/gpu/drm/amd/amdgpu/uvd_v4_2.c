@@ -48,6 +48,17 @@ static bool uvd_v4_2_is_ps4(struct amdgpu_device *adev)
 	       (adev->asic_type == CHIP_LIVERPOOL || adev->asic_type == CHIP_GLADIUS);
 }
 
+/* PS4 diagnostics: UVD is left alone during boot; ps4_uvd_go starts it later with every step logged. */
+static struct amdgpu_device *ps4_uvd_adev;
+static bool ps4_uvd_started;
+static bool ps4_uvd_trace;
+#define PS4_STEP(adev, fmt, ...) do { \
+	if (ps4_uvd_trace) { \
+		dev_info((adev)->dev, "PS4 UVD step: " fmt "\n", ##__VA_ARGS__); \
+		mdelay(30); \
+	} \
+} while (0)
+
 static void uvd_v4_2_mc_resume(struct amdgpu_device *adev);
 static void uvd_v4_2_set_ring_funcs(struct amdgpu_device *adev);
 static void uvd_v4_2_set_irq_funcs(struct amdgpu_device *adev);
@@ -176,10 +187,15 @@ static int uvd_v4_2_hw_init(struct amdgpu_ip_block *ip_block)
 	uint32_t tmp;
 	int r;
 
-	if (uvd_v4_2_is_ps4(adev))
-		dev_info(adev->dev, "PS4 UVD: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x\n",
+	if (uvd_v4_2_is_ps4(adev)) {
+		ps4_uvd_adev = adev;
+		ring->sched.ready = false;
+		dev_info(adev->dev, "PS4 UVD: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x; not started at boot, "
+			 "echo 1 > /sys/module/amdgpu/parameters/ps4_uvd_go starts it\n",
 			 RREG32(mmUVD_STATUS), RREG32(mmUVD_SOFT_RESET),
 			 RREG32(mmUVD_VCPU_CNTL), RREG32(mmUVD_LMI_STATUS));
+		return 0;
+	}
 
 	uvd_v4_2_enable_mgcg(adev, true);
 	amdgpu_asic_set_uvd_clocks(adev, 10000, 10000);
@@ -240,6 +256,9 @@ static int uvd_v4_2_hw_fini(struct amdgpu_ip_block *ip_block)
 	struct amdgpu_device *adev = ip_block->adev;
 
 	cancel_delayed_work_sync(&adev->uvd.idle_work);
+
+	if (uvd_v4_2_is_ps4(adev) && !ps4_uvd_started)
+		return 0;
 
 	if (RREG32(mmUVD_STATUS) != 0)
 		uvd_v4_2_stop(adev);
@@ -320,16 +339,20 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 
 	/* set uvd busy */
 	WREG32_P(mmUVD_STATUS, 1<<2, ~(1<<2));
+	PS4_STEP(adev, "busy set, status %08x", RREG32(mmUVD_STATUS));
 
 	uvd_v4_2_set_dcm(adev, true);
 	WREG32(mmUVD_CGC_GATE, 0);
+	PS4_STEP(adev, "dcm set, cgc gate 0");
 
 	/* take UVD block out of reset */
 	WREG32_P(mmSRBM_SOFT_RESET, 0, ~SRBM_SOFT_RESET__SOFT_RESET_UVD_MASK);
 	mdelay(5);
+	PS4_STEP(adev, "out of srbm reset, srbm %08x", RREG32(mmSRBM_SOFT_RESET));
 
 	/* enable VCPU clock */
 	WREG32(mmUVD_VCPU_CNTL,  1 << 9);
+	PS4_STEP(adev, "vcpu clock on");
 
 	/* disable interrupt */
 	WREG32_P(mmUVD_MASTINT_EN, 0, ~(1 << 1));
@@ -344,6 +367,7 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 
 	/* initialize UVD memory controller */
 	WREG32(mmUVD_LMI_CTRL, 0x203108);
+	PS4_STEP(adev, "lmi ctrl set");
 
 	tmp = RREG32(mmUVD_MPC_CNTL);
 	WREG32(mmUVD_MPC_CNTL, tmp | 0x10);
@@ -354,14 +378,17 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 	WREG32(mmUVD_MPC_SET_MUXB1, 0x0);
 	WREG32(mmUVD_MPC_SET_ALU, 0);
 	WREG32(mmUVD_MPC_SET_MUX, 0x88);
+	PS4_STEP(adev, "mpc set");
 
 	uvd_v4_2_mc_resume(adev);
+	PS4_STEP(adev, "mc resume done");
 
 	tmp = RREG32_UVD_CTX(ixUVD_LMI_CACHE_CTRL);
 	WREG32_UVD_CTX(ixUVD_LMI_CACHE_CTRL, tmp & (~0x10));
 
 	/* enable UMC */
 	WREG32_P(mmUVD_LMI_CTRL2, 0, ~(1 << 8));
+	PS4_STEP(adev, "umc enabled");
 
 	WREG32_P(mmUVD_SOFT_RESET, 0, ~UVD_SOFT_RESET__LMI_SOFT_RESET_MASK);
 
@@ -370,6 +397,7 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 	WREG32_P(mmUVD_SOFT_RESET, 0, ~UVD_SOFT_RESET__VCPU_SOFT_RESET_MASK);
 
 	mdelay(10);
+	PS4_STEP(adev, "vcpu out of reset, soft_reset %08x status %08x", RREG32(mmUVD_SOFT_RESET), RREG32(mmUVD_STATUS));
 
 	for (i = 0; i < 10; ++i) {
 		uint32_t status;
@@ -384,6 +412,7 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 			break;
 
 		DRM_ERROR("UVD not responding, trying to reset the VCPU!!!\n");
+		PS4_STEP(adev, "vcpu attempt %d: status %08x lmi %08x", i, status, RREG32(mmUVD_LMI_STATUS));
 		WREG32_P(mmUVD_SOFT_RESET, UVD_SOFT_RESET__VCPU_SOFT_RESET_MASK,
 				~UVD_SOFT_RESET__VCPU_SOFT_RESET_MASK);
 		mdelay(10);
@@ -397,6 +426,7 @@ static int uvd_v4_2_start(struct amdgpu_device *adev)
 		return r;
 	}
 
+	PS4_STEP(adev, "vcpu running");
 	/* enable interupt */
 	WREG32_P(mmUVD_MASTINT_EN, 3<<1, ~(3 << 1));
 
@@ -756,6 +786,9 @@ static int uvd_v4_2_set_powergating_state(struct amdgpu_ip_block *ip_block,
 	 */
 	struct amdgpu_device *adev = ip_block->adev;
 
+	PS4_STEP(adev, "powergating %s", state == AMD_PG_STATE_GATE ? "gate" : "ungate");
+	if (uvd_v4_2_is_ps4(adev) && !ps4_uvd_started)
+		return 0;
 	if (state == AMD_PG_STATE_GATE) {
 		uvd_v4_2_stop(adev);
 		if (adev->pg_flags & AMD_PG_SUPPORT_UVD && !adev->pm.dpm_enabled) {
@@ -845,3 +878,49 @@ const struct amdgpu_ip_block_version uvd_v4_2_ip_block =
 		.rev = 0,
 		.funcs = &uvd_v4_2_ip_funcs,
 };
+
+/* PS4 diagnostics trigger: echo 1 > /sys/module/amdgpu/parameters/ps4_uvd_go */
+static int ps4_uvd_go_set(const char *val, const struct kernel_param *kp)
+{
+	struct amdgpu_device *adev = ps4_uvd_adev;
+	struct amdgpu_ring *ring;
+	int r;
+
+	if (!adev)
+		return -ENODEV;
+	if (ps4_uvd_started)
+		return 0;
+	ring = &adev->uvd.inst->ring;
+	ps4_uvd_trace = true;
+	PS4_STEP(adev, "begin: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x srbm %08x",
+		 RREG32(mmUVD_STATUS), RREG32(mmUVD_SOFT_RESET), RREG32(mmUVD_VCPU_CNTL),
+		 RREG32(mmUVD_LMI_STATUS), RREG32(mmSRBM_SOFT_RESET));
+	PS4_STEP(adev, "clocks before: vclk %08x/%08x dclk %08x/%08x",
+		 RREG32_SMC(ixCG_VCLK_CNTL), RREG32_SMC(ixCG_VCLK_STATUS),
+		 RREG32_SMC(ixCG_DCLK_CNTL), RREG32_SMC(ixCG_DCLK_STATUS));
+	uvd_v4_2_enable_mgcg(adev, true);
+	PS4_STEP(adev, "mgcg on");
+	r = amdgpu_asic_set_uvd_clocks(adev, 10000, 10000);
+	PS4_STEP(adev, "set_uvd_clocks(10000, 10000) -> %d: vclk %08x/%08x dclk %08x/%08x", r,
+		 RREG32_SMC(ixCG_VCLK_CNTL), RREG32_SMC(ixCG_VCLK_STATUS),
+		 RREG32_SMC(ixCG_DCLK_CNTL), RREG32_SMC(ixCG_DCLK_STATUS));
+	ps4_uvd_started = true;
+	/* ring test -> begin_use -> clocks + ungate -> uvd_v4_2_start, all traced */
+	r = amdgpu_ring_test_helper(ring);
+	PS4_STEP(adev, "ring test -> %d", r);
+	ps4_uvd_trace = false;
+	if (r) {
+		ring->sched.ready = false;
+		dev_warn(adev->dev, "PS4 UVD: start failed (%d)\n", r);
+	} else {
+		dev_info(adev->dev, "PS4 UVD: initialized, ring ready\n");
+	}
+	return r;
+}
+
+static const struct kernel_param_ops ps4_uvd_go_ops = {
+	.set = ps4_uvd_go_set,
+	.get = param_get_bool,
+};
+module_param_cb(ps4_uvd_go, &ps4_uvd_go_ops, &ps4_uvd_started, 0644);
+MODULE_PARM_DESC(ps4_uvd_go, "PS4: write 1 to start the UVD decoder with every step logged");
