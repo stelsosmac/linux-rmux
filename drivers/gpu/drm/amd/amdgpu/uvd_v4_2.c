@@ -61,6 +61,45 @@ static bool ps4_uvd_set_up;
 	} \
 } while (0)
 
+static struct amdgpu_bo *ps4_uvd_pd_bo;   /* page directory of VMID 14 (UVD on the PS4) */
+
+/* VMID 14: VA 0x3_0000_0000 + X -> GART address X, by a page directory whose entries point into the GART table. */
+static int ps4_uvd_map_vm14(struct amdgpu_device *adev)
+{
+	const u64 base_va = 0x300000000ULL;
+	unsigned int bs = adev->vm_manager.block_size;          /* 10: a page table holds 1024 entries = 4 MB */
+	u64 npde = adev->vm_manager.max_pfn >> bs;
+	u64 first = base_va >> (12 + bs);
+	u64 count = adev->gmc.gart_size >> (12 + bs);
+	u64 gart_table = amdgpu_bo_gpu_offset(adev->gart.bo);
+	u64 pd_gpu, i;
+	u64 *pd;
+	int r;
+
+	if (!ps4_uvd_pd_bo) {
+		r = amdgpu_bo_create_kernel(adev, npde * 8, PAGE_SIZE, AMDGPU_GEM_DOMAIN_VRAM,
+					    &ps4_uvd_pd_bo, &pd_gpu, (void **)&pd);
+		if (r)
+			return r;
+	} else {
+		pd_gpu = amdgpu_bo_gpu_offset(ps4_uvd_pd_bo);
+		r = amdgpu_bo_kmap(ps4_uvd_pd_bo, (void **)&pd);
+		if (r)
+			return r;
+	}
+	memset(pd, 0, npde * 8);
+	for (i = 0; i < count && first + i < npde; i++)
+		pd[first + i] = (gart_table + i * (8ULL << bs)) | AMDGPU_PTE_VALID;
+	mb();
+	amdgpu_device_flush_hdp(adev, NULL);
+	WREG32(mmVM_CONTEXT8_PAGE_TABLE_BASE_ADDR + 14 - 8, pd_gpu >> 12);
+	WREG32(mmVM_INVALIDATE_REQUEST, 1 << 14);
+	PS4_STEP(adev, "vm14: block size %u, %llu PDEs, PD at %llx, PDE %llu..%llu -> GART table %llx, start %08x end %08x",
+		 bs, npde, pd_gpu, first, first + count - 1, gart_table,
+		 RREG32(mmVM_CONTEXT8_PAGE_TABLE_START_ADDR + 14 - 8), RREG32(mmVM_CONTEXT8_PAGE_TABLE_END_ADDR + 14 - 8));
+	return 0;
+}
+
 static void uvd_v4_2_mc_resume(struct amdgpu_device *adev);
 static void uvd_v4_2_set_ring_funcs(struct amdgpu_device *adev);
 static void uvd_v4_2_set_irq_funcs(struct amdgpu_device *adev);
@@ -949,6 +988,10 @@ set_up:
 	PS4_STEP(adev, "set_uvd_clocks(10000, 10000) -> %d: vclk %08x/%08x dclk %08x/%08x", r,
 		 RREG32_SMC(ixCG_VCLK_CNTL), RREG32_SMC(ixCG_VCLK_STATUS),
 		 RREG32_SMC(ixCG_DCLK_CNTL), RREG32_SMC(ixCG_DCLK_STATUS));
+	r = ps4_uvd_map_vm14(adev);
+	PS4_STEP(adev, "vm14 page directory -> %d", r);
+	if (r)
+		return r;
 	ps4_uvd_started = true;
 	/* the block is still marked invalid, so begin_use's ungate would skip it: start it here */
 	r = uvd_v4_2_start(adev);
