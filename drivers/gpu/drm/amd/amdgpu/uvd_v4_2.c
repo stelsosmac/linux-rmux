@@ -942,14 +942,27 @@ static int ps4_uvd_go_set(const char *val, const struct kernel_param *kp)
 		 RREG32_SMC(ixCG_VCLK_CNTL), RREG32_SMC(ixCG_VCLK_STATUS),
 		 RREG32_SMC(ixCG_DCLK_CNTL), RREG32_SMC(ixCG_DCLK_STATUS));
 	ps4_uvd_started = true;
-	/* ring test -> begin_use -> clocks + ungate -> uvd_v4_2_start, all traced */
+	/* the block is still marked invalid, so begin_use's ungate would skip it: start it here */
+	r = uvd_v4_2_start(adev);
+	PS4_STEP(adev, "start -> %d: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x", r,
+		 RREG32(mmUVD_STATUS), RREG32(mmUVD_SOFT_RESET), RREG32(mmUVD_VCPU_CNTL), RREG32(mmUVD_LMI_STATUS));
+	if (r) {
+		ps4_uvd_started = false;
+		ps4_uvd_trace = false;
+		dev_warn(adev->dev, "PS4 UVD: start failed (%d)\n", r);
+		return r;
+	}
 	r = amdgpu_ring_test_helper(ring);
-	PS4_STEP(adev, "ring test -> %d", r);
+	PS4_STEP(adev, "ring test -> %d: rptr %08x wptr %08x", r, RREG32(mmUVD_RBC_RB_RPTR), RREG32(mmUVD_RBC_RB_WPTR));
 	ps4_uvd_trace = false;
 	if (r) {
 		ring->sched.ready = false;
 		dev_warn(adev->dev, "PS4 UVD: start failed (%d)\n", r);
 	} else {
+		struct amdgpu_ip_block *ip_block = amdgpu_device_ip_get_ip_block(adev, AMD_IP_BLOCK_TYPE_UVD);
+
+		if (ip_block)
+			ip_block->status.valid = ip_block->status.sw = ip_block->status.hw = true;
 		dev_info(adev->dev, "PS4 UVD: initialized, ring ready\n");
 	}
 	return r;
