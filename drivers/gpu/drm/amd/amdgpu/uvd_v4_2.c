@@ -119,8 +119,14 @@ static int uvd_v4_2_early_init(struct amdgpu_ip_block *ip_block)
 	 * registers read real values (the block is powered) and the non-DPM path in begin_use
 	 * (set_uvd_clocks, PGFSM ungate, uvd_v4_2_start) does the rest.
 	 */
-	if (!amdgpu_dpm && !uvd_v4_2_is_ps4(adev))
+	if (!amdgpu_dpm) {
+		if (uvd_v4_2_is_ps4(adev)) {
+			ps4_uvd_adev = adev;
+			dev_info(adev->dev, "PS4 UVD: left out at boot; echo 1 > /sys/module/amdgpu/parameters/ps4_uvd_go "
+				 "sets it up and starts it with every step logged\n");
+		}
 		return -ENOENT;
+	}
 
 	adev->uvd.num_uvd_inst = 1;
 
@@ -890,8 +896,39 @@ static int ps4_uvd_go_set(const char *val, const struct kernel_param *kp)
 		return -ENODEV;
 	if (ps4_uvd_started)
 		return 0;
-	ring = &adev->uvd.inst->ring;
 	ps4_uvd_trace = true;
+	{
+		struct amdgpu_ip_block *ip_block = amdgpu_device_ip_get_ip_block(adev, AMD_IP_BLOCK_TYPE_UVD);
+
+		PS4_STEP(adev, "setup: ip block %p, valid %d, uvd fw %p", ip_block,
+			 ip_block ? ip_block->status.valid : -1, adev->uvd.fw);
+		if (!ip_block)
+			return -ENODEV;
+		adev->uvd.num_uvd_inst = 1;
+		uvd_v4_2_set_ring_funcs(adev);
+		uvd_v4_2_set_irq_funcs(adev);
+		PS4_STEP(adev, "setup: ring and irq funcs set");
+		r = amdgpu_irq_add_id(adev, AMDGPU_IRQ_CLIENTID_LEGACY, 124, &adev->uvd.inst->irq);
+		PS4_STEP(adev, "setup: irq_add_id -> %d", r);
+		if (r)
+			return r;
+		r = amdgpu_uvd_sw_init(adev);
+		PS4_STEP(adev, "setup: amdgpu_uvd_sw_init -> %d, fw_version %08x, max_handles %u, vcpu bo %p, gpu addr %llx",
+			 r, adev->uvd.fw_version, adev->uvd.max_handles, adev->uvd.inst->vcpu_bo,
+			 (unsigned long long)adev->uvd.inst->gpu_addr);
+		if (r)
+			return r;
+		ring = &adev->uvd.inst->ring;
+		sprintf(ring->name, "uvd");
+		r = amdgpu_ring_init(adev, ring, 512, &adev->uvd.inst->irq, 0, AMDGPU_RING_PRIO_DEFAULT, NULL);
+		PS4_STEP(adev, "setup: ring_init -> %d, ring gpu addr %llx", r, (unsigned long long)ring->gpu_addr);
+		if (r)
+			return r;
+		r = amdgpu_uvd_resume(adev);
+		PS4_STEP(adev, "setup: uvd_resume (firmware copied) -> %d", r);
+		if (r)
+			return r;
+	}
 	PS4_STEP(adev, "begin: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x srbm %08x",
 		 RREG32(mmUVD_STATUS), RREG32(mmUVD_SOFT_RESET), RREG32(mmUVD_VCPU_CNTL),
 		 RREG32(mmUVD_LMI_STATUS), RREG32(mmSRBM_SOFT_RESET));
