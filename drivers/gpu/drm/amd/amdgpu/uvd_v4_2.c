@@ -35,6 +35,7 @@
 #include "oss/oss_2_0_sh_mask.h"
 
 #include "bif/bif_4_1_d.h"
+#include "gmc/gmc_7_1_d.h"
 
 #include "smu/smu_7_0_1_d.h"
 #include "smu/smu_7_0_1_sh_mask.h"
@@ -52,6 +53,7 @@ static bool uvd_v4_2_is_ps4(struct amdgpu_device *adev)
 static struct amdgpu_device *ps4_uvd_adev;
 static bool ps4_uvd_started;
 static bool ps4_uvd_trace;
+static bool ps4_uvd_set_up;
 #define PS4_STEP(adev, fmt, ...) do { \
 	if (ps4_uvd_trace) { \
 		dev_info((adev)->dev, "PS4 UVD step: " fmt "\n", ##__VA_ARGS__); \
@@ -900,10 +902,14 @@ static int ps4_uvd_go_set(const char *val, const struct kernel_param *kp)
 	{
 		struct amdgpu_ip_block *ip_block = amdgpu_device_ip_get_ip_block(adev, AMD_IP_BLOCK_TYPE_UVD);
 
-		PS4_STEP(adev, "setup: ip block %p, valid %d, uvd fw %p", ip_block,
-			 ip_block ? ip_block->status.valid : -1, adev->uvd.fw);
+		PS4_STEP(adev, "setup: ip block %p, valid %d, uvd fw %p, done before %d", ip_block,
+			 ip_block ? ip_block->status.valid : -1, adev->uvd.fw, ps4_uvd_set_up);
 		if (!ip_block)
 			return -ENODEV;
+		if (ps4_uvd_set_up) {
+			ring = &adev->uvd.inst->ring;
+			goto set_up;
+		}
 		adev->uvd.num_uvd_inst = 1;
 		uvd_v4_2_set_ring_funcs(adev);
 		uvd_v4_2_set_irq_funcs(adev);
@@ -928,7 +934,9 @@ static int ps4_uvd_go_set(const char *val, const struct kernel_param *kp)
 		PS4_STEP(adev, "setup: uvd_resume (firmware copied) -> %d", r);
 		if (r)
 			return r;
+		ps4_uvd_set_up = true;
 	}
+set_up:
 	PS4_STEP(adev, "begin: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x srbm %08x",
 		 RREG32(mmUVD_STATUS), RREG32(mmUVD_SOFT_RESET), RREG32(mmUVD_VCPU_CNTL),
 		 RREG32(mmUVD_LMI_STATUS), RREG32(mmSRBM_SOFT_RESET));
@@ -946,7 +954,22 @@ static int ps4_uvd_go_set(const char *val, const struct kernel_param *kp)
 	r = uvd_v4_2_start(adev);
 	PS4_STEP(adev, "start -> %d: status %08x soft_reset %08x vcpu_cntl %08x lmi %08x", r,
 		 RREG32(mmUVD_STATUS), RREG32(mmUVD_SOFT_RESET), RREG32(mmUVD_VCPU_CNTL), RREG32(mmUVD_LMI_STATUS));
+	PS4_STEP(adev, "vcpu cache: off0 %08x size0 %08x off1 %08x size1 %08x off2 %08x size2 %08x",
+		 RREG32(mmUVD_VCPU_CACHE_OFFSET0), RREG32(mmUVD_VCPU_CACHE_SIZE0),
+		 RREG32(mmUVD_VCPU_CACHE_OFFSET1), RREG32(mmUVD_VCPU_CACHE_SIZE1),
+		 RREG32(mmUVD_VCPU_CACHE_OFFSET2), RREG32(mmUVD_VCPU_CACHE_SIZE2));
+	PS4_STEP(adev, "lmi: addr_ext %08x ext40 %08x ctrl %08x ctrl2 %08x swap %08x; mc fb_location %08x",
+		 RREG32(mmUVD_LMI_ADDR_EXT), RREG32(mmUVD_LMI_EXT40_ADDR), RREG32(mmUVD_LMI_CTRL),
+		 RREG32(mmUVD_LMI_CTRL2), RREG32(mmUVD_LMI_SWAP_CNTL), RREG32(mmMC_VM_FB_LOCATION));
+	PS4_STEP(adev, "clocks: vclk %08x/%08x dclk %08x/%08x cgc_ctrl %08x cgc_gate %08x",
+		 RREG32_SMC(ixCG_VCLK_CNTL), RREG32_SMC(ixCG_VCLK_STATUS),
+		 RREG32_SMC(ixCG_DCLK_CNTL), RREG32_SMC(ixCG_DCLK_STATUS),
+		 RREG32(mmUVD_CGC_CTRL), RREG32(mmUVD_CGC_GATE));
 	if (r) {
+		/* stop the VCPU: its blocked memory reads flooded the GPU fault interrupt and froze the PS4 (rmux-9) */
+		uvd_v4_2_stop(adev);
+		PS4_STEP(adev, "stopped after the failed start: status %08x vcpu_cntl %08x",
+			 RREG32(mmUVD_STATUS), RREG32(mmUVD_VCPU_CNTL));
 		ps4_uvd_started = false;
 		ps4_uvd_trace = false;
 		dev_warn(adev->dev, "PS4 UVD: start failed (%d)\n", r);
@@ -956,6 +979,8 @@ static int ps4_uvd_go_set(const char *val, const struct kernel_param *kp)
 	PS4_STEP(adev, "ring test -> %d: rptr %08x wptr %08x", r, RREG32(mmUVD_RBC_RB_RPTR), RREG32(mmUVD_RBC_RB_WPTR));
 	ps4_uvd_trace = false;
 	if (r) {
+		uvd_v4_2_stop(adev);
+		ps4_uvd_started = false;
 		ring->sched.ready = false;
 		dev_warn(adev->dev, "PS4 UVD: start failed (%d)\n", r);
 	} else {

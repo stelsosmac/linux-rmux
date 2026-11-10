@@ -64,6 +64,7 @@
 #endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
 #define FIRMWARE_BONAIRE	"amdgpu/bonaire_uvd.bin"
+extern int amdgpu_ps4_uvd;	/* cik.c */
 #define FIRMWARE_LIVERPOOL	"amdgpu/liverpool_uvd.bin"	/* the PS4 file is byte-identical to bonaire_uvd.bin */
 #define FIRMWARE_KABINI	"amdgpu/kabini_uvd.bin"
 #define FIRMWARE_KAVERI	"amdgpu/kaveri_uvd.bin"
@@ -333,6 +334,10 @@ int amdgpu_uvd_sw_init(struct amdgpu_device *adev)
 	vcpu_bo_domain = AMDGPU_GEM_DOMAIN_VRAM;
 	if (adev->uvd.address_64_bit)
 		vcpu_bo_domain |= AMDGPU_GEM_DOMAIN_GTT;
+	/* PS4: UVD reads memory through a VM context that only maps the GART (the VRAM at 0xF00000000 came out
+	 * as 0x302800000 in the faults), so the firmware, heap and stack go to GTT, below 512 MB. */
+	if ((adev->asic_type == CHIP_LIVERPOOL || adev->asic_type == CHIP_GLADIUS) && amdgpu_ps4_uvd)
+		vcpu_bo_domain = AMDGPU_GEM_DOMAIN_GTT;
 
 	for (j = 0; j < adev->uvd.num_uvd_inst; j++) {
 		if (adev->uvd.harvest_config & (1 << j))
