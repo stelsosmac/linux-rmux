@@ -44,6 +44,16 @@
 #include "gmc/gmc_7_1_d.h"
 
 #define PS4_READY_FW "orbis/liverpool_uvd.bin"
+
+/* rmux: a deferred start runs after SDMA/accel are up; report them as off then. */
+static inline bool ps4_boot_buffer_funcs(struct amdgpu_device *adev)
+{
+	return amdgpu_ps4_uvd_deferred_active() ? false : adev->mman.buffer_funcs_enabled;
+}
+static inline bool ps4_boot_accel(struct amdgpu_device *adev)
+{
+	return amdgpu_ps4_uvd_deferred_active() ? false : adev->accel_working;
+}
 #define PS4_READY_FW_BYTES 314168U
 #define PS4_READY_PAYLOAD_BYTES 313912U
 #define PS4_READY_PAYLOAD_OFFSET 256U
@@ -718,8 +728,8 @@ static bool ps4_token_sample(struct amdgpu_device *adev,
 	TOKEN_SAVED(mmVM_CONTEXT0_PAGE_TABLE_BASE_ADDR + 4, s->pd, pd_addr >> 12);
 	if (!ps4_token_expect(s, 2, 1, s->reset_count, ~0U, reset_base) ||
 	    !ps4_token_expect(s, 2, 2, s->in_reset, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 3, adev->mman.buffer_funcs_enabled, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 4, adev->accel_working, ~0U, 0))
+	    !ps4_token_expect(s, 2, 3, ps4_boot_buffer_funcs(adev), ~0U, 0) ||
+	    !ps4_token_expect(s, 2, 4, ps4_boot_accel(adev), ~0U, 0))
 		return false;
 #define TOKEN_REG(reg, mask, want) \
 	if (!ps4_token_expect(s, 0, reg, RREG32(reg), mask, want)) return false
@@ -1235,8 +1245,8 @@ static bool ps4_stobs_core_sample(struct amdgpu_device *adev,
 	TOKEN_SAVED(mmVM_CONTEXT0_PAGE_TABLE_BASE_ADDR + 4, s->pd, pd_addr >> 12);
 	if (!ps4_token_expect(s, 2, 1, s->reset_count, ~0U, reset_base) ||
 	    !ps4_token_expect(s, 2, 2, s->in_reset, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 3, adev->mman.buffer_funcs_enabled, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 4, adev->accel_working, ~0U, 0))
+	    !ps4_token_expect(s, 2, 3, ps4_boot_buffer_funcs(adev), ~0U, 0) ||
+	    !ps4_token_expect(s, 2, 4, ps4_boot_accel(adev), ~0U, 0))
 		return false;
 #define TOKEN_REG(reg, mask, want) \
 	if (!ps4_token_expect(s, 0, reg, RREG32(reg), mask, want)) return false
@@ -1832,8 +1842,8 @@ static bool ps4_ib_data_core_sample(struct amdgpu_device *adev,
 	TOKEN_SAVED(mmVM_CONTEXT0_PAGE_TABLE_BASE_ADDR + 4, s->pd, pd_addr >> 12);
 	if (!ps4_token_expect(s, 2, 1, s->reset_count, ~0U, reset_base) ||
 	    !ps4_token_expect(s, 2, 2, s->in_reset, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 3, adev->mman.buffer_funcs_enabled, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 4, adev->accel_working, ~0U, 0))
+	    !ps4_token_expect(s, 2, 3, ps4_boot_buffer_funcs(adev), ~0U, 0) ||
+	    !ps4_token_expect(s, 2, 4, ps4_boot_accel(adev), ~0U, 0))
 		return false;
 #define TOKEN_REG(reg, mask, want) \
 	if (!ps4_token_expect(s, 0, reg, RREG32(reg), mask, want)) return false
@@ -2959,8 +2969,8 @@ static bool ps4_frame_core_sample(struct amdgpu_device *adev,
 	TOKEN_SAVED(mmVM_CONTEXT0_PAGE_TABLE_BASE_ADDR + 4, s->pd, pd_addr >> 12);
 	if (!ps4_token_expect(s, 2, 1, s->reset_count, ~0U, reset_base) ||
 	    !ps4_token_expect(s, 2, 2, s->in_reset, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 3, adev->mman.buffer_funcs_enabled, ~0U, 0) ||
-	    !ps4_token_expect(s, 2, 4, adev->accel_working, ~0U, 0))
+	    !ps4_token_expect(s, 2, 3, ps4_boot_buffer_funcs(adev), ~0U, 0) ||
+	    !ps4_token_expect(s, 2, 4, ps4_boot_accel(adev), ~0U, 0))
 		return false;
 #define TOKEN_REG(reg, mask, want) \
 	if (!ps4_token_expect(s, 0, reg, RREG32(reg), mask, want)) return false
@@ -3574,12 +3584,12 @@ ps4_ready_core_run(struct amdgpu_device *adev, void *r1_cpu,
 	if (!r1_cpu || backing_size != PS4_READY_BACKING_BYTES ||
 	    !pd_addr || (pd_addr & (AMDGPU_GPU_PAGE_SIZE - 1)) ||
 	    adev->gfx.config.gb_addr_config != 0x02011003 ||
-	    adev->mman.buffer_funcs_enabled || adev->accel_working ||
+	    ps4_boot_buffer_funcs(adev) || ps4_boot_accel(adev) ||
 	    amdgpu_in_reset(adev)) {
 		dev_err(adev->dev,
 			"PS4_UVD_READY PREFLIGHT backing_present=%d size=%zx pd=%llx gb_addr_config=%08x expected=02011003 buffer_funcs=%d accel=%d reset=%d\n",
 			!!r1_cpu, backing_size, pd_addr, adev->gfx.config.gb_addr_config,
-			adev->mman.buffer_funcs_enabled, adev->accel_working,
+			ps4_boot_buffer_funcs(adev), ps4_boot_accel(adev),
 			amdgpu_in_reset(adev));
 		return ps4_ready_core_finish(op, PS4_READY_CORE_PREFLIGHT, -EINVAL);
 	}

@@ -59,6 +59,12 @@ MODULE_PARM_DESC(ps4_uvd_defer_start,
 	"Diagnostics: register the PS4 UVD block at boot but start it only on write to ps4_uvd_start (default 0)");
 
 static struct amdgpu_device *ps4_uvd_deferred_adev;
+static bool ps4_uvd_deferred_active;
+
+bool amdgpu_ps4_uvd_deferred_active(void)
+{
+	return READ_ONCE(ps4_uvd_deferred_active);
+}
 static DEFINE_MUTEX(ps4_uvd_start_lock);
 static int ps4_uvd_hw_start(struct amdgpu_device *adev);
 
@@ -76,7 +82,10 @@ static int ps4_uvd_start_set(const char *val, const struct kernel_param *kp)
 		return -ENODEV;
 	mutex_lock(&ps4_uvd_start_lock);
 	dev_info(adev->dev, "PS4 UVD step: deferred start requested\n");
+	WRITE_ONCE(ps4_uvd_deferred_active, true);
+	dev_warn(adev->dev, "PS4 UVD step: deferred mode: boot-phase checks (buffer_funcs/accel off) are relaxed\n");
 	r = ps4_uvd_hw_start(adev);
+	WRITE_ONCE(ps4_uvd_deferred_active, false);
 	dev_info(adev->dev, "PS4 UVD step: deferred start -> %d\n", r);
 	mutex_unlock(&ps4_uvd_start_lock);
 	return r;

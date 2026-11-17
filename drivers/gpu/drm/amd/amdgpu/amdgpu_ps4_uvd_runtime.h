@@ -46,6 +46,7 @@ bool amdgpu_ps4_uvd_runtime_requested(void);
 bool amdgpu_ps4_uvd_runtime_options_valid(struct amdgpu_device *adev);
 bool amdgpu_ps4_uvd_runtime_legacy_conflict(void);
 bool amdgpu_ps4_uvd_runtime_enabled(struct amdgpu_device *adev);
+bool amdgpu_ps4_uvd_deferred_active(void);
 bool amdgpu_ps4_uvd_runtime_ring(struct amdgpu_ring *ring);
 bool amdgpu_ps4_uvd_runtime_retain(struct amdgpu_device *adev);
 bool amdgpu_ps4_uvd_runtime_reserve(struct amdgpu_device *adev,
