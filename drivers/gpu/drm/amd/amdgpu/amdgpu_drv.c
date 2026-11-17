@@ -2401,6 +2401,8 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 	unsigned long flags = ent->driver_data;
 	int ret, retry = 0, i;
 	bool supports_atomic = false;
+	bool ps4_prepare_loaded = false;
+	bool ps4_prepare_registered = false;
 
 	if ((pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA ||
 	    (pdev->class >> 8) == PCI_CLASS_DISPLAY_OTHER) {
@@ -2454,6 +2456,8 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 	if (IS_ERR(adev))
 		return PTR_ERR(adev);
 
+	amdgpu_ps4_uvd_irq_init(adev);
+
 	adev->dev  = &pdev->dev;
 	adev->pdev = pdev;
 	ddev = adev_to_drm(adev);
@@ -2472,6 +2476,9 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 	ret = amdgpu_driver_load_kms(adev, flags);
 	if (ret)
 		goto err_pci;
+	/* LIVE_PREPARE_PROBE_LOADED_BEGIN */
+	ps4_prepare_loaded = true;
+	/* LIVE_PREPARE_PROBE_LOADED_END */
 
 retry_init:
 	ret = drm_dev_register(ddev, flags);
@@ -2483,6 +2490,9 @@ retry_init:
 	} else if (ret) {
 		goto err_pci;
 	}
+	/* LIVE_PREPARE_PROBE_REGISTERED_BEGIN */
+	ps4_prepare_registered = true;
+	/* LIVE_PREPARE_PROBE_REGISTERED_END */
 
 	ret = amdgpu_xcp_dev_register(adev, ent);
 	if (ret)
@@ -2559,6 +2569,20 @@ retry_init:
 	return 0;
 
 err_pci:
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "probe-error");
+	/* LIVE_PREPARE_PROBE_ERROR_BEGIN */
+	/* A failed load already unloads internally. Only terminal errors
+	 * after a successful load need this preparation-only cleanup.
+	 * Do not defer hw_fini to DRM final release: PCI/devres mappings
+	 * may disappear while open DRM references still exist.
+	 */
+	if (ps4_prepare_loaded && amdgpu_ps4_live_prepare_enabled(adev)) {
+		if (ps4_prepare_registered)
+			drm_dev_unplug(ddev);
+		amdgpu_driver_unload_kms(ddev);
+	}
+	/* LIVE_PREPARE_PROBE_ERROR_END */
 	pci_disable_device(pdev);
 	return ret;
 }
@@ -2568,6 +2592,9 @@ amdgpu_pci_remove(struct pci_dev *pdev)
 {
 	struct drm_device *dev = pci_get_drvdata(pdev);
 	struct amdgpu_device *adev = drm_to_adev(dev);
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_pci_remove");
 
 	amdgpu_ras_eeprom_check_and_recover(adev);
 	amdgpu_xcp_dev_unplug(adev);
@@ -2599,6 +2626,13 @@ amdgpu_pci_shutdown(struct pci_dev *pdev)
 	struct drm_device *dev = pci_get_drvdata(pdev);
 	struct amdgpu_device *adev = drm_to_adev(dev);
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev)) {
+		if (amdgpu_ps4_uvd_runtime_poweroff(adev) ||
+		    amdgpu_ps4_uvd_runtime_restart(adev))
+			return;
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_pci_shutdown");
+	}
+
 	if (amdgpu_ras_intr_triggered())
 		return;
 
@@ -2622,6 +2656,9 @@ static int amdgpu_pmops_prepare(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
 	struct amdgpu_device *adev = drm_to_adev(drm_dev);
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		return -EBUSY;
 
 	/* device maybe not resumed here, return immediately in this case */
 	if (adev->in_s4 && adev->in_suspend)
@@ -2857,6 +2894,9 @@ static int amdgpu_pmops_runtime_checks(struct device *dev)
 	struct amdgpu_device *adev = drm_to_adev(drm_dev);
 	int ret;
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		return -EBUSY;
+
 	if (adev->pm.rpm_mode == AMDGPU_RUNPM_NONE) {
 		pm_runtime_forbid(dev);
 		return -EBUSY;
@@ -2968,6 +3008,9 @@ static int amdgpu_pmops_runtime_resume(struct device *dev)
 	struct drm_device *drm_dev = pci_get_drvdata(pdev);
 	struct amdgpu_device *adev = drm_to_adev(drm_dev);
 	int ret;
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		return -EBUSY;
 
 	if (adev->pm.rpm_mode == AMDGPU_RUNPM_NONE)
 		return -EINVAL;
@@ -3186,7 +3229,20 @@ const struct drm_driver amdgpu_partition_driver = {
 	.patchlevel = KMS_DRIVER_PATCHLEVEL,
 };
 
+static void amdgpu_ps4_uvd_pci_reset_prepare(struct pci_dev *pdev)
+{
+	struct drm_device *dev = pci_get_drvdata(pdev);
+	struct amdgpu_device *adev;
+
+	if (!dev)
+		return;
+	adev = drm_to_adev(dev);
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "pci-reset-prepare");
+}
+
 static struct pci_error_handlers amdgpu_pci_err_handler = {
+	.reset_prepare = amdgpu_ps4_uvd_pci_reset_prepare,
 	.error_detected	= amdgpu_pci_error_detected,
 	.mmio_enabled	= amdgpu_pci_mmio_enabled,
 	.slot_reset	= amdgpu_pci_slot_reset,

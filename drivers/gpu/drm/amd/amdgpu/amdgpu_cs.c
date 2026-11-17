@@ -36,6 +36,7 @@
 
 #include "amdgpu_cs.h"
 #include "amdgpu.h"
+#include "amdgpu_ps4_uvd_jobs.h"
 #include "amdgpu_trace.h"
 #include "amdgpu_gmc.h"
 #include "amdgpu_gem.h"
@@ -1433,6 +1434,8 @@ int amdgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	struct amdgpu_bo_list_entry *e;
 	struct amdgpu_cs_parser parser;
+	unsigned int i;
+	bool ps4_uvd_session_locked = false;
 	int r;
 
 	if (amdgpu_ras_intr_triggered())
@@ -1464,6 +1467,32 @@ int amdgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		goto error_fini;
 	}
 
+	/* parser_bos succeeded: BO reservations are held. */
+	for (i = 0; i < parser.gang_size; ++i) {
+		struct amdgpu_job *job = parser.jobs[i];
+		struct amdgpu_ps4_uvd_jobs *state;
+
+		state = amdgpu_ps4_uvd_runtime_jobs(amdgpu_job_ring(job));
+		if (!state)
+			continue;
+		r = amdgpu_ps4_uvd_jobs_admit(state, &parser, job);
+		if (r)
+			goto error_free_user_pages;
+	}
+
+	if (parser.gang_size == 1 &&
+	    amdgpu_ps4_uvd_runtime_ring(amdgpu_job_ring(parser.jobs[0]))) {
+		if (!mutex_trylock(&adev->ps4_uvd_runtime.session_lock)) {
+			r = -EBUSY;
+			goto error_free_user_pages;
+		}
+		ps4_uvd_session_locked = true;
+		if (atomic_read(&adev->ps4_uvd_runtime.failed)) {
+			r = -ESHUTDOWN;
+			goto error_free_user_pages;
+		}
+	}
+
 	r = amdgpu_cs_patch_jobs(&parser);
 	if (r)
 		goto error_free_user_pages;
@@ -1482,10 +1511,21 @@ int amdgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	if (r)
 		goto error_free_user_pages;
 
+	if (ps4_uvd_session_locked)
+		mutex_unlock(&adev->ps4_uvd_runtime.session_lock);
+
 	amdgpu_cs_parser_fini(&parser);
 	return 0;
 
 error_free_user_pages:
+	if (ps4_uvd_session_locked)
+		amdgpu_ps4_uvd_runtime_fault(adev, r);
+	for (i = 0; i < parser.gang_size; ++i)
+		if (parser.jobs[i])
+			amdgpu_ps4_uvd_jobs_abort_reserved(parser.jobs[i]);
+	if (ps4_uvd_session_locked)
+		mutex_unlock(&adev->ps4_uvd_runtime.session_lock);
+
 	/* amdgpu_cs_submit() only drops the ranges once it got that far. */
 	amdgpu_bo_list_for_each_userptr_entry(e, parser.bo_list) {
 		amdgpu_hmm_range_free(e->range);
@@ -1823,6 +1863,14 @@ int amdgpu_cs_find_mapping(struct amdgpu_cs_parser *parser,
 	/* Double check that the BO is reserved by this CS */
 	if (dma_resv_locking_ctx((*bo)->tbo.base.resv) != drm_exec_ticket(&parser->exec))
 		return -EINVAL;
+
+	/* A leased PS4 UVD job may address only the BOs it actually holds.
+	 * An exec reservation alone can also cover implicit VM objects.
+	 */
+	for (i = 0; i < parser->gang_size; ++i)
+		if (parser->jobs[i] &&
+		    !amdgpu_ps4_uvd_jobs_owns_bo(parser->jobs[i], *bo))
+			return -EOPNOTSUPP;
 
 	/* Make sure VRAM is allocated contigiously */
 	(*bo)->flags |= AMDGPU_GEM_CREATE_VRAM_CONTIGUOUS;

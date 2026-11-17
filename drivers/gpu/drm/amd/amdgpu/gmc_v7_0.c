@@ -27,6 +27,7 @@
 
 #include <drm/drm_cache.h>
 #include "amdgpu.h"
+#include "amdgpu_ps4_uvd_irq.h"
 #include "cikd.h"
 #include "cik.h"
 #include "gmc_v7_0.h"
@@ -619,6 +620,7 @@ static int gmc_v7_0_gart_enable(struct amdgpu_device *adev)
 		dev_err(adev->dev, "No VRAM object for PCIE GART.\n");
 		return -EINVAL;
 	}
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_GART_ENABLE);
 	amdgpu_gtt_mgr_recover(&adev->mman.gtt_mgr);
 	table_addr = amdgpu_bo_gpu_offset(adev->gart.bo);
 
@@ -752,6 +754,7 @@ static void gmc_v7_0_gart_disable(struct amdgpu_device *adev)
 {
 	u32 tmp;
 
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_GART_DISABLE);
 	/* Disable all tables */
 	WREG32(mmVM_CONTEXT0_CNTL, 0);
 	WREG32(mmVM_CONTEXT1_CNTL, 0);
@@ -1295,6 +1298,11 @@ static int gmc_v7_0_process_interrupt(struct amdgpu_device *adev,
 
 	if (!addr && !status)
 		return 0;
+
+	/* VMID4_FAULT_HOOK_BEGIN */
+	/* Preserve the captured tuple after acknowledgement, before reporting. */
+	amdgpu_ps4_uvd_irq_record_fault(adev, addr, status, mc_client);
+	/* VMID4_FAULT_HOOK_END */
 
 	amdgpu_vm_update_fault_cache(adev, entry->pasid,
 				     ((u64)addr) << AMDGPU_GPU_PAGE_SHIFT, status, AMDGPU_GFXHUB(0));

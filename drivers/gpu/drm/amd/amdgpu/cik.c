@@ -31,6 +31,7 @@
 #include "amdgpu.h"
 #include "amdgpu_atombios.h"
 #include "amdgpu_ih.h"
+#include "amdgpu_ps4_uvd_ready.h"
 #include "amdgpu_uvd.h"
 #include "amdgpu_vce.h"
 #include "cikd.h"
@@ -129,9 +130,24 @@ static const struct amdgpu_video_codecs cik_video_codecs_decode =
 	.codec_array = cik_video_codecs_decode_array,
 };
 
+static const struct amdgpu_video_codec_info ps4_uvd_decode_array[] = {
+	{ .codec_type = AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG4_AVC,
+	  .max_width = 1920, .max_height = 1088,
+	  .max_pixels_per_frame = 1920 * 1088, .max_level = 41 },
+};
+static const struct amdgpu_video_codecs ps4_uvd_decode = {
+	.codec_count = ARRAY_SIZE(ps4_uvd_decode_array),
+	.codec_array = ps4_uvd_decode_array,
+};
+static const struct amdgpu_video_codecs ps4_uvd_no_encode;
+
 static int cik_query_video_codecs(struct amdgpu_device *adev, bool encode,
 				  const struct amdgpu_video_codecs **codecs)
 {
+	if (amdgpu_ps4_uvd_runtime_enabled(adev)) {
+		*codecs = encode ? &ps4_uvd_no_encode : &ps4_uvd_decode;
+		return 0;
+	}
 	switch (adev->asic_type) {
 	case CHIP_BONAIRE:
 	case CHIP_HAWAII:
@@ -1772,6 +1788,11 @@ static int cik_asic_reset(struct amdgpu_device *adev)
 {
 	int r;
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev)) {
+		amdgpu_ps4_uvd_runtime_fault(adev, -EIO);
+		return -EOPNOTSUPP;
+	}
+
 	/* APUs don't have full asic reset */
 	if (adev->flags & AMD_IS_APU)
 		return 0;
@@ -1799,11 +1820,26 @@ static int cik_set_uvd_clock(struct amdgpu_device *adev, u32 clock,
 	struct atom_clock_dividers dividers;
 	uint32_t tmp;
 
+	/* Private readiness gate only: the caller has bounded the Atom table.
+	 * Ordinary clock callers retain their exact pre-existing behavior.
+	 */
+	if (amdgpu_ps4_uvd_ready_enabled(adev) &&
+	    (!adev->mode_info.atom_context ||
+	     !adev->mode_info.atom_context->bios))
+		return -EINVAL;
+
 	r = amdgpu_atombios_get_clock_dividers(adev,
 					       COMPUTE_GPUCLK_INPUT_FLAG_DEFAULT_GPUCLK,
 					       clock, false, &dividers);
 	if (r)
 		return r;
+	/* post_divider is ORed below. Validate its public seven-bit field before
+	 * any control write; zero is representable and is not invented-invalid.
+	 * This executes Atom once, with no speculative validation execution.
+	 */
+	if (amdgpu_ps4_uvd_ready_enabled(adev) &&
+	    (dividers.post_divider & ~CG_DCLK_CNTL__DCLK_DIVIDER_MASK))
+		return -ERANGE;
 
 	tmp = RREG32_SMC(cntl_reg);
 	tmp &= ~(CG_DCLK_CNTL__DCLK_DIR_CNTL_EN_MASK |
@@ -2724,7 +2760,8 @@ int cik_set_ip_blocks(struct amdgpu_device *adev)
 			amdgpu_device_ip_block_add(adev, &dce_v8_1_ip_block);
 		amdgpu_device_ip_block_add(adev, &gfx_v7_1_ip_block);
 		amdgpu_device_ip_block_add(adev, &cik_sdma_ip_block);
-		/*amdgpu_device_ip_block_add(adev, &uvd_v4_2_ip_block)*/;
+		if (amdgpu_ps4_uvd_runtime_enabled(adev))
+			amdgpu_device_ip_block_add(adev, &ps4_uvd_ip_block);
 		/*amdgpu_device_ip_block_add(adev, &vce_v2_0_ip_block)*/;
 		break;
 	case CHIP_GLADIUS:

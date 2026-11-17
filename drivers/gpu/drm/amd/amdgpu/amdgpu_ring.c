@@ -247,6 +247,10 @@ int amdgpu_ring_init(struct amdgpu_device *adev, struct amdgpu_ring *ring,
 	else if (ring == &adev->sdma.instance[0].page)
 		sched_hw_submission = 256;
 
+	if (amdgpu_ps4_uvd_runtime_enabled(adev) &&
+	    ring == &adev->uvd.inst[0].ring)
+		sched_hw_submission = 1;
+
 	if (ring->adev == NULL) {
 		if (adev->num_rings >= AMDGPU_MAX_RINGS)
 			return -EINVAL;

@@ -88,6 +88,9 @@ void amdgpu_driver_unload_kms(struct drm_device *dev)
 	if (adev == NULL || !adev->num_ip_blocks)
 		return;
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "unload-kms");
+
 	amdgpu_unregister_gpu_instance(adev);
 
 	if (adev->rmmio == NULL)

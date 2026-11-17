@@ -210,11 +210,28 @@ bool amdgpu_fence_process(struct amdgpu_ring *ring)
 	struct amdgpu_device *adev = ring->adev;
 	uint32_t seq, last_seq;
 
+	if (amdgpu_ps4_uvd_runtime_ring(ring)) {
+		struct amdgpu_ps4_uvd_runtime *s = &adev->ps4_uvd_runtime;
+		unsigned long flags;
+
+		spin_lock_irqsave(&s->observe_lock, flags);
+		last_seq = atomic_read(&drv->last_seq);
+		seq = le32_to_cpu(READ_ONCE(*drv->cpu_addr));
+		dma_rmb();
+		if (seq < last_seq || !amdgpu_ps4_uvd_runtime_observe(ring, seq)) {
+			spin_unlock_irqrestore(&s->observe_lock, flags);
+			amdgpu_ps4_uvd_runtime_fault(adev, -EIO);
+			return false;
+		}
+		atomic_set(&drv->last_seq, seq);
+		spin_unlock_irqrestore(&s->observe_lock, flags);
+	} else {
 	do {
 		last_seq = atomic_read(&ring->fence_drv.last_seq);
 		seq = amdgpu_fence_read(ring);
 
 	} while (atomic_cmpxchg(&drv->last_seq, last_seq, seq) != last_seq);
+	}
 
 	if (timer_delete(&ring->fence_drv.fallback_timer) &&
 	    seq != ring->fence_drv.sync_seq)
@@ -411,7 +428,8 @@ int amdgpu_fence_driver_start_ring(struct amdgpu_ring *ring,
 	struct amdgpu_device *adev = ring->adev;
 	uint64_t index;
 
-	if (ring->funcs->type != AMDGPU_RING_TYPE_UVD) {
+	if (ring->funcs->type != AMDGPU_RING_TYPE_UVD ||
+	    amdgpu_ps4_uvd_runtime_ring(ring)) {
 		ring->fence_drv.cpu_addr = ring->fence_cpu_addr;
 		ring->fence_drv.gpu_addr = ring->fence_gpu_addr;
 	} else {
@@ -671,6 +689,10 @@ void amdgpu_fence_driver_force_completion(struct amdgpu_ring *ring,
 	struct amdgpu_fence_driver *drv = &ring->fence_drv;
 	unsigned long flags;
 
+	if (amdgpu_ps4_uvd_runtime_ring(ring)) {
+		amdgpu_ps4_uvd_runtime_fault(ring->adev, -EIO);
+		return;
+	}
 	spin_lock_irqsave(&drv->lock, flags);
 	for (unsigned int i = 0; i <= drv->num_fences_mask; ++i) {
 		struct dma_fence *fence;

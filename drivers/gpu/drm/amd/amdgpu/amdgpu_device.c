@@ -49,6 +49,7 @@
 #include <linux/efi.h>
 #include "amdgpu.h"
 #include "amdgpu_trace.h"
+#include "amdgpu_ps4_map_canary.h"
 #include "amdgpu_i2c.h"
 #include "atom.h"
 #include "amdgpu_atombios.h"
@@ -2538,6 +2539,15 @@ static int amdgpu_device_ip_init(struct amdgpu_device *adev)
 	if (r)
 		goto init_failed;
 
+	/* Before TTM GPU entities, KFD and userspace can produce jobs. */
+	if (amdgpu_ps4_map_canary_enabled(adev)) {
+		if (!adev->ps4_canary_fences_initialized) {
+			amdgpu_fence_driver_hw_init(adev);
+			adev->ps4_canary_fences_initialized = true;
+		}
+		amdgpu_ps4_map_canary_run(adev);
+	}
+
 	/* If SDMA is not brought up during hwini, the ttm buffer funcs enablement
 	 * is delayed after reset-on-init completes.
 	 */
@@ -3794,6 +3804,8 @@ int amdgpu_device_init(struct amdgpu_device *adev,
 	else
 		adev->asic_type = flags & AMD_ASIC_MASK;
 
+	amdgpu_ps4_live_prepare_init(adev);
+
 	adev->usec_timeout = AMDGPU_MAX_USEC_TIMEOUT;
 	if (amdgpu_emu_mode == 1)
 		adev->usec_timeout *= 10;
@@ -4286,6 +4298,10 @@ static void amdgpu_device_unmap_mmio(struct amdgpu_device *adev)
  */
 void amdgpu_device_fini_hw(struct amdgpu_device *adev)
 {
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_device_fini_hw");
+
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_HW_FINI);
 	dev_info(adev->dev, "finishing device.\n");
 	flush_delayed_work(&adev->delayed_init_work);
 
@@ -4335,6 +4351,9 @@ void amdgpu_device_fini_hw(struct amdgpu_device *adev)
 	amdgpu_coredump_fini(adev);
 	amdgpu_device_ip_fini_early(adev);
 
+	/* Only completed SDMA preparation owners; no UVD was started. */
+	amdgpu_ps4_live_prepare_fini(adev);
+
 	amdgpu_irq_fini_hw(adev);
 
 	if (adev->mman.initialized)
@@ -4351,6 +4370,9 @@ void amdgpu_device_fini_sw(struct amdgpu_device *adev)
 {
 	int i;
 	bool px;
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_device_fini_sw");
 
 	amdgpu_device_ip_fini(adev);
 	amdgpu_fence_driver_sw_fini(adev);
@@ -4488,8 +4510,13 @@ int amdgpu_device_prepare(struct drm_device *dev)
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	int i, r;
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		return -EBUSY;
+
 	if (dev->switch_power_state == DRM_SWITCH_POWER_OFF)
 		return 0;
+
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_SUSPEND);
 
 	/* Evict the majority of BOs before starting suspend sequence */
 	r = amdgpu_device_evict_resources(adev);
@@ -4548,9 +4575,13 @@ int amdgpu_device_suspend(struct drm_device *dev, bool notify_clients)
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	int r, rec;
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		return -EBUSY;
+
 	if (dev->switch_power_state == DRM_SWITCH_POWER_OFF)
 		return 0;
 
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_SUSPEND);
 	adev->in_suspend = true;
 
 	if (amdgpu_sriov_vf(adev)) {
@@ -4689,6 +4720,9 @@ int amdgpu_device_resume(struct drm_device *dev, bool notify_clients)
 {
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	int r = 0;
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		return -EBUSY;
 
 	if (amdgpu_sriov_vf(adev)) {
 		r = amdgpu_virt_request_full_gpu(adev, true);
@@ -5044,6 +5078,8 @@ int amdgpu_device_pre_asic_reset(struct amdgpu_device *adev,
 	bool need_full_reset =
 		test_bit(AMDGPU_NEED_FULL_RESET, &reset_context->flags);
 	int i, r;
+
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_RESET);
 
 	if (reset_context->reset_req_dev == adev)
 		job = reset_context->job;
@@ -5739,6 +5775,13 @@ int amdgpu_device_gpu_recover(struct amdgpu_device *adev,
 	/* save the pasid here as the job may be freed before the end of the reset */
 	int pasid = job ? job->pasid : -EINVAL;
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev)) {
+		amdgpu_ps4_uvd_runtime_fault(adev, -EIO);
+		return -EOPNOTSUPP;
+	}
+
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_RESET);
+
 	/*
 	 * If it reaches here because of hang/timeout and a RAS error is
 	 * detected at the same time, let RAS recovery take care of it.
@@ -6206,6 +6249,9 @@ pci_ers_result_t amdgpu_pci_error_detected(struct pci_dev *pdev, pci_channel_sta
 	struct amdgpu_reset_context reset_context;
 	struct list_head device_list;
 
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_pci_error_detected");
+
 	dev_info(adev->dev, "PCI error: detected callback!!\n");
 
 	adev->pci_channel_state = state;
@@ -6297,6 +6343,9 @@ pci_ers_result_t amdgpu_pci_slot_reset(struct pci_dev *pdev)
 	int r = 0, i, timeout;
 	u32 memsize;
 	u16 status;
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_pci_slot_reset");
 
 	dev_info(adev->dev, "PCI error: slot reset callback!!\n");
 
@@ -6397,6 +6446,9 @@ void amdgpu_pci_resume(struct pci_dev *pdev)
 	struct list_head device_list;
 	struct amdgpu_hive_info *hive = NULL;
 	struct amdgpu_device *tmp_adev = NULL;
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_pci_resume");
 
 	dev_info(adev->dev, "PCI error: resume callback!!\n");
 
@@ -6601,6 +6653,9 @@ void amdgpu_device_halt(struct amdgpu_device *adev)
 {
 	struct pci_dev *pdev = adev->pdev;
 	struct drm_device *ddev = adev_to_drm(adev);
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev))
+		amdgpu_ps4_uvd_runtime_park(adev, "amdgpu_device_halt");
 
 	amdgpu_xcp_dev_unplug(adev);
 	drm_dev_unplug(ddev);

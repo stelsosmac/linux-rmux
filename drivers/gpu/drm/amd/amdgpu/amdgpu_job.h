@@ -42,6 +42,7 @@
 #define AMDGPU_JOB_GET_VMID(job) ((job) ? (job)->vmid : 0)
 
 struct amdgpu_fence;
+struct amdgpu_ps4_uvd_lease;
 enum amdgpu_ib_pool_type;
 
 /* Internal kernel job ids. (decreasing values, starting from U64_MAX). */
@@ -68,6 +69,7 @@ struct amdgpu_job {
 	struct drm_sched_job    base;
 	struct amdgpu_vm	*vm;
 	struct amdgpu_sync	explicit_sync;
+	struct amdgpu_ps4_uvd_lease *ps4_uvd_lease;
 	struct amdgpu_fence	*hw_fence;
 	struct amdgpu_fence	*hw_vm_fence;
 	struct dma_fence	*gang_submit;

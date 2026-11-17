@@ -62,6 +62,12 @@
 #include "amdgpu_mode.h"
 #include "amdgpu_ih.h"
 #include "amdgpu_irq.h"
+#include "amdgpu_ps4_uvd_irq.h"
+#include "amdgpu_ps4_live_prepare.h"
+#include "amdgpu_ps4_uvd_ready.h"
+#include "amdgpu_ps4_uvd_message_create.h"
+#include "amdgpu_ps4_uvd_frame.h"
+#include "amdgpu_ps4_uvd_runtime.h"
 #include "amdgpu_ucode.h"
 #include "amdgpu_ttm.h"
 #include "amdgpu_psp.h"
@@ -622,6 +628,13 @@ enum amdgpu_enforce_isolation_mode {
 };
 
 struct amdgpu_device {
+	struct ps4_uvd_irq_observer ps4_uvd_irq;
+	struct amdgpu_ps4_live_prepare ps4_live_prepare;
+	struct amdgpu_ps4_uvd_ready_operation ps4_uvd_ready_operation;
+	struct amdgpu_ps4_uvd_create_operation ps4_uvd_create_operation;
+	struct amdgpu_ps4_uvd_frame_operation ps4_uvd_frame_operation;
+	struct amdgpu_ps4_uvd_runtime ps4_uvd_runtime;
+	bool ps4_canary_fences_initialized;
 	struct device			*dev;
 	struct pci_dev			*pdev;
 	/* The two ends of the physical PCIe link outside the device. */

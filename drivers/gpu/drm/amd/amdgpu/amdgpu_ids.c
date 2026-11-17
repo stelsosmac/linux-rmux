@@ -28,6 +28,7 @@
 
 #include "amdgpu.h"
 #include "amdgpu_trace.h"
+#include "amdgpu_ps4_map_canary.h"
 
 /*
  * PASID manager
@@ -664,6 +665,15 @@ void amdgpu_vmid_mgr_init(struct amdgpu_device *adev)
 		for (j = 1; j < id_mgr->num_ids; ++j) {
 			amdgpu_vmid_reset(adev, i, j);
 			amdgpu_sync_create(&id_mgr->ids[j].active);
+			if (amdgpu_ps4_uvd_runtime_reserve(adev, i, j)) {
+				INIT_LIST_HEAD(&id_mgr->ids[j].list);
+				continue;
+			}
+			if (amdgpu_ps4_map_canary_reserve(adev, i, j)) {
+				INIT_LIST_HEAD(&id_mgr->ids[j].list);
+				amdgpu_ps4_live_prepare_reserved(adev);
+				continue;
+			}
 			list_add_tail(&id_mgr->ids[j].list, &id_mgr->ids_lru);
 		}
 	}
@@ -679,6 +689,8 @@ void amdgpu_vmid_mgr_init(struct amdgpu_device *adev)
 void amdgpu_vmid_mgr_fini(struct amdgpu_device *adev)
 {
 	unsigned i, j;
+
+	amdgpu_ps4_live_prepare_invalidate(adev, PS4_LIVE_EVENT_VMID_FINI);
 
 	for (i = 0; i < AMDGPU_MAX_VMHUBS; ++i) {
 		struct amdgpu_vmid_mgr *id_mgr =

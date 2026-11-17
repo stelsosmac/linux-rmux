@@ -145,6 +145,10 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned int num_ibs,
 	unsigned int i;
 	int r = 0;
 
+	r = amdgpu_ps4_uvd_runtime_before_submit(ring);
+	if (r)
+		return r;
+
 	if (num_ibs == 0)
 		return -EINVAL;
 

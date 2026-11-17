@@ -352,3 +352,10 @@ include $(AMD_GPU_RAS_FULL_PATH)/Makefile
 amdgpu-y += $(AMD_GPU_RAS_FILES)
 
 obj-$(CONFIG_DRM_AMDGPU)+= amdgpu.o
+
+# Private default-off PS4 VMID4 translation diagnostic.
+amdgpu-y += amdgpu_ps4_map_canary.o
+amdgpu-y += amdgpu_ps4_uvd_ready.o
+amdgpu-y += ps4_uvd_message.o ps4_uvd_message_job.o ps4_uvd_decode_message.o
+amdgpu-y += amdgpu_ps4_uvd_irq.o
+amdgpu-y += amdgpu_ps4_uvd_runtime.o amdgpu_ps4_uvd_memory.o amdgpu_ps4_uvd_jobs.o

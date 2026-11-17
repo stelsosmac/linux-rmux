@@ -35,6 +35,7 @@
 #include <drm/drm_drv.h>
 
 #include "amdgpu.h"
+#include "amdgpu_ps4_uvd_jobs.h"
 #include "amdgpu_pm.h"
 #include "amdgpu_uvd.h"
 #include "amdgpu_cs.h"
@@ -208,6 +209,11 @@ int amdgpu_uvd_sw_init(struct amdgpu_device *adev)
 		break;
 #endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
+	case CHIP_LIVERPOOL:
+		if (!amdgpu_ps4_uvd_runtime_enabled(adev))
+			return -EINVAL;
+		fw_name = "orbis/liverpool_uvd.bin";
+		break;
 	case CHIP_BONAIRE:
 		fw_name = FIRMWARE_BONAIRE;
 		break;
@@ -327,6 +333,14 @@ int amdgpu_uvd_sw_init(struct amdgpu_device *adev)
 	vcpu_bo_domain = AMDGPU_GEM_DOMAIN_VRAM;
 	if (adev->uvd.address_64_bit)
 		vcpu_bo_domain |= AMDGPU_GEM_DOMAIN_GTT;
+
+	if (amdgpu_ps4_uvd_runtime_enabled(adev)) {
+		/* Proven Liverpool transport accepts native addresses above 4GiB. */
+		adev->uvd.address_64_bit = true;
+		adev->uvd.max_handles = 1;
+		bo_size = AMDGPU_PS4_UVD_BACKING_BYTES;
+		vcpu_bo_domain = AMDGPU_GEM_DOMAIN_GTT;
+	}
 
 	for (j = 0; j < adev->uvd.num_uvd_inst; j++) {
 		if (adev->uvd.harvest_config & (1 << j))
@@ -528,6 +542,13 @@ void amdgpu_uvd_free_handles(struct amdgpu_device *adev, struct drm_file *filp)
 {
 	struct amdgpu_ring *ring = &adev->uvd.inst[0].ring;
 	int i, r;
+	bool ps4_runtime = amdgpu_ps4_uvd_runtime_ring(ring);
+
+	if (ps4_runtime) {
+		mutex_lock(&adev->ps4_uvd_runtime.session_lock);
+		if (atomic_read(&adev->ps4_uvd_runtime.failed))
+			goto ps4_session_unlock;
+	}
 
 	for (i = 0; i < adev->uvd.max_handles; ++i) {
 		uint32_t handle = atomic_read(&adev->uvd.handles[i]);
@@ -535,20 +556,42 @@ void amdgpu_uvd_free_handles(struct amdgpu_device *adev, struct drm_file *filp)
 		if (handle != 0 && adev->uvd.filp[i] == filp) {
 			struct dma_fence *fence;
 
+			if (ps4_runtime && amdgpu_ps4_uvd_runtime_drain_jobs(adev))
+				goto ps4_session_unlock;
+
 			r = amdgpu_uvd_get_destroy_msg(ring, handle, false,
 						       &fence);
 			if (r) {
+				if (ps4_runtime) {
+					amdgpu_ps4_uvd_runtime_fault(adev, r);
+					goto ps4_session_unlock;
+				}
 				DRM_ERROR("Error destroying UVD %d!\n", r);
 				continue;
 			}
 
-			dma_fence_wait(fence, false);
+			if (ps4_runtime) {
+				long waited = dma_fence_wait_timeout(fence, false,
+					msecs_to_jiffies(2100));
+
+				if (waited <= 0 || dma_fence_get_status(fence) < 0) {
+					amdgpu_ps4_uvd_runtime_fault(adev, -ETIMEDOUT);
+					dma_fence_put(fence);
+					goto ps4_session_unlock;
+				}
+			} else {
+				dma_fence_wait(fence, false);
+			}
 			dma_fence_put(fence);
 
 			adev->uvd.filp[i] = NULL;
 			atomic_set(&adev->uvd.handles[i], 0);
 		}
 	}
+
+ps4_session_unlock:
+	if (ps4_runtime)
+		mutex_unlock(&adev->ps4_uvd_runtime.session_lock);
 }
 
 static void amdgpu_uvd_force_into_vcpu_segment(struct amdgpu_bo *bo)
@@ -653,6 +696,10 @@ static int amdgpu_uvd_cs_msg_decode(struct amdgpu_device *adev, uint32_t *msg,
 
 	unsigned int image_size, tmp, min_dpb_size, num_dpb_buffer;
 	unsigned int min_ctx_size = ~0;
+
+	if (amdgpu_ps4_uvd_runtime_enabled(adev) &&
+	    (stream_type != 0 || width > 1920 || height > 1088))
+		return -EOPNOTSUPP;
 
 	/* Reject invalid dimensions */
 	if (width < 16 || height < 16 || width > 4096 || height > 4096) {
@@ -821,6 +868,20 @@ static int amdgpu_uvd_cs_msg(struct amdgpu_uvd_cs_ctx *ctx,
 		amdgpu_bo_kunmap(bo);
 		DRM_ERROR("Invalid UVD handle!\n");
 		return -EINVAL;
+	}
+
+	if (amdgpu_ps4_uvd_runtime_enabled(adev) && msg_type == 0 &&
+	    (msg[4] != 0 || msg[7] < 16 || msg[8] < 16 ||
+	     msg[7] > 1920 || msg[8] > 1088)) {
+		amdgpu_bo_kunmap(bo);
+		return -EOPNOTSUPP;
+	}
+
+	if (amdgpu_ps4_uvd_runtime_enabled(adev) && msg_type == 2 &&
+	    (atomic_read(&adev->uvd.handles[0]) != handle ||
+	     adev->uvd.filp[0] != ctx->parser->filp)) {
+		amdgpu_bo_kunmap(bo);
+		return -EPERM;
 	}
 
 	switch (msg_type) {
@@ -1107,6 +1168,7 @@ static int amdgpu_uvd_send_msg(struct amdgpu_ring *ring, struct amdgpu_bo *bo,
 			       bool direct, struct dma_fence **fence)
 {
 	struct amdgpu_device *adev = ring->adev;
+	struct amdgpu_ps4_uvd_jobs *state;
 	struct dma_fence *f = NULL;
 	uint32_t offset, data[4];
 	struct amdgpu_job *job;
@@ -1146,6 +1208,16 @@ static int amdgpu_uvd_send_msg(struct amdgpu_ring *ring, struct amdgpu_bo *bo,
 		ib->ptr[i+1] = 0;
 	}
 	ib->length_dw = 16;
+
+	/* Even file-close DESTROY owns a temporary message BO. Acquire its
+	 * extra pin/reference before the caller drops its kernel allocation.
+	 */
+	state = amdgpu_ps4_uvd_runtime_jobs(ring);
+	if (state) {
+		r = amdgpu_ps4_uvd_jobs_admit_kernel_message(state, job, bo);
+		if (r)
+			goto err_free;
+	}
 
 	if (direct) {
 		r = amdgpu_job_submit_direct(job, ring, &f);

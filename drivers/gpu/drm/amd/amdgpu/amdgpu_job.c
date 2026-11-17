@@ -28,6 +28,7 @@
 #include <drm/drm_drv.h>
 
 #include "amdgpu.h"
+#include "amdgpu_ps4_uvd_jobs.h"
 #include "amdgpu_trace.h"
 #include "amdgpu_reset.h"
 #include "amdgpu_dev_coredump.h"
@@ -93,6 +94,11 @@ static enum drm_gpu_sched_stat amdgpu_job_timedout(struct drm_sched_job *s_job)
 	struct amdgpu_task_info *ti = NULL;
 	struct amdgpu_device *adev = ring->adev;
 	int idx, r;
+
+	if (amdgpu_ps4_uvd_runtime_retain(adev)) {
+		amdgpu_ps4_uvd_runtime_fault(adev, -ETIMEDOUT);
+		return DRM_GPU_SCHED_STAT_ENODEV;
+	}
 
 	if (!drm_dev_enter(adev_to_drm(adev), &idx)) {
 		dev_info(adev->dev, "%s - device unplugged skipping recovery on scheduler:%s",
@@ -298,6 +304,10 @@ void amdgpu_job_free_resources(struct amdgpu_job *job)
 	struct dma_fence *f;
 	unsigned i;
 
+	/* PS4 leases own SA spans until positive hardware completion. */
+	if (amdgpu_ps4_uvd_jobs_defer_resources(job))
+		return;
+
 	/* Check if any fences were initialized */
 	if (job->base.s_fence &&
 	    dma_fence_was_initialized(&job->base.s_fence->finished))
@@ -314,6 +324,9 @@ void amdgpu_job_free_resources(struct amdgpu_job *job)
 static void amdgpu_job_free_cb(struct drm_sched_job *s_job)
 {
 	struct amdgpu_job *job = to_amdgpu_job(s_job);
+
+	if (!amdgpu_ps4_uvd_jobs_job_free(job, true))
+		return;
 
 	drm_sched_job_cleanup(s_job);
 
@@ -349,6 +362,9 @@ void amdgpu_job_set_gang_leader(struct amdgpu_job *job,
 
 void amdgpu_job_free(struct amdgpu_job *job)
 {
+	if (!amdgpu_ps4_uvd_jobs_job_free(job, false))
+		return;
+
 	if (job->base.entity)
 		drm_sched_job_cleanup(&job->base);
 
@@ -369,12 +385,33 @@ void amdgpu_job_free(struct amdgpu_job *job)
 	kfree(job);
 }
 
+/* Re-enter the original free path after the lease has been detached. */
+void amdgpu_ps4_uvd_job_free_deferred(struct amdgpu_job *job,
+				  bool scheduler_free)
+{
+	if (scheduler_free)
+		amdgpu_job_free_cb(&job->base);
+	else
+		amdgpu_job_free(job);
+}
+
 struct dma_fence *amdgpu_job_submit(struct amdgpu_job *job)
 {
+	struct amdgpu_ps4_uvd_jobs *state;
 	struct dma_fence *f;
+	int admission = 0;
+
+	state = amdgpu_ps4_uvd_runtime_jobs(amdgpu_job_ring(job));
+	if (state && !job->ps4_uvd_lease)
+		admission = amdgpu_ps4_uvd_jobs_admit_kernel(state, job);
 
 	drm_sched_job_arm(&job->base);
 	f = dma_fence_get(&job->base.s_fence->finished);
+	/* Existing kernel callers expect a fence, not ERR_PTR. Consume the
+	 * rejected job through the scheduler with no hardware publication.
+	 */
+	if (admission)
+		dma_fence_set_error(f, admission);
 	amdgpu_job_free_resources(job);
 	drm_sched_entity_push_job(&job->base);
 
@@ -384,10 +421,21 @@ struct dma_fence *amdgpu_job_submit(struct amdgpu_job *job)
 int amdgpu_job_submit_direct(struct amdgpu_job *job, struct amdgpu_ring *ring,
 			     struct dma_fence **fence)
 {
+	struct amdgpu_ps4_uvd_jobs *state;
 	int r;
 
 	job->base.sched = &ring->sched;
+	state = amdgpu_ps4_uvd_runtime_jobs(ring);
+	if (state && !job->ps4_uvd_lease) {
+		r = amdgpu_ps4_uvd_jobs_admit_kernel(state, job);
+		if (r)
+			return r;
+	}
+	r = amdgpu_ps4_uvd_jobs_enter(job);
+	if (r)
+		return r;
 	r = amdgpu_ib_schedule(ring, job->num_ibs, job->ibs, job, fence);
+	amdgpu_ps4_uvd_jobs_submitted(job, r ? NULL : *fence, r);
 
 	if (r)
 		return r;
@@ -454,11 +502,19 @@ static struct dma_fence *amdgpu_job_run(struct drm_sched_job *sched_job)
 		dma_fence_set_error(finished, -ECANCELED);
 
 	if (finished->error < 0) {
+		if (amdgpu_ps4_uvd_runtime_ring(ring))
+			amdgpu_ps4_uvd_runtime_fault(adev, finished->error);
 		dev_dbg(adev->dev, "Skip scheduling IBs in ring(%s)",
 			ring->name);
 	} else {
-		r = amdgpu_ib_schedule(ring, job->num_ibs, job->ibs, job,
-				       &fence);
+		r = amdgpu_ps4_uvd_jobs_enter(job);
+		if (!r) {
+			r = amdgpu_ib_schedule(ring, job->num_ibs, job->ibs, job,
+					       &fence);
+			amdgpu_ps4_uvd_jobs_submitted(job, fence, r);
+		}
+		if (r)
+			dma_fence_set_error(finished, r);
 		if (r)
 			dev_err(adev->dev,
 				"Error scheduling IBs (%d) in ring(%s)", r,

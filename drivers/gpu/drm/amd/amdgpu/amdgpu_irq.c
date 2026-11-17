@@ -523,6 +523,9 @@ void amdgpu_irq_dispatch(struct amdgpu_device *adev,
 	client_id = entry.client_id;
 	src_id = entry.src_id;
 
+	/* Passive decoded hardware-IH accounting before routing/acknowledgement. */
+	amdgpu_ps4_uvd_irq_observe(adev, &entry);
+
 	if (client_id >= AMDGPU_IRQ_CLIENTID_MAX) {
 		dev_dbg(adev->dev, "Invalid client_id in IV: %d\n", client_id);
 
