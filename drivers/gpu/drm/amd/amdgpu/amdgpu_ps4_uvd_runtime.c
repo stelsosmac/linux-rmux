@@ -53,6 +53,41 @@ module_param_named(ps4_uvd_poff, ps4_uvd_poff, bool, 0444);
 MODULE_PARM_DESC(ps4_uvd_poff,
 	"Experimental terminal power-off/restart: retain UVD DMA and skip shutdown teardown for ICC (default 0)");
 
+static bool ps4_uvd_defer_start __ro_after_init;
+module_param_named(ps4_uvd_defer_start, ps4_uvd_defer_start, bool, 0444);
+MODULE_PARM_DESC(ps4_uvd_defer_start,
+	"Diagnostics: register the PS4 UVD block at boot but start it only on write to ps4_uvd_start (default 0)");
+
+static struct amdgpu_device *ps4_uvd_deferred_adev;
+static DEFINE_MUTEX(ps4_uvd_start_lock);
+static int ps4_uvd_hw_start(struct amdgpu_device *adev);
+
+static int ps4_uvd_start_set(const char *val, const struct kernel_param *kp)
+{
+	struct amdgpu_device *adev = READ_ONCE(ps4_uvd_deferred_adev);
+	bool go;
+	int r = kstrtobool(val, &go);
+
+	if (r)
+		return r;
+	if (!go)
+		return 0;
+	if (!adev)
+		return -ENODEV;
+	mutex_lock(&ps4_uvd_start_lock);
+	dev_info(adev->dev, "PS4 UVD step: deferred start requested\n");
+	r = ps4_uvd_hw_start(adev);
+	dev_info(adev->dev, "PS4 UVD step: deferred start -> %d\n", r);
+	mutex_unlock(&ps4_uvd_start_lock);
+	return r;
+}
+
+static const struct kernel_param_ops ps4_uvd_start_ops = {
+	.set = ps4_uvd_start_set,
+};
+module_param_cb(ps4_uvd_start, &ps4_uvd_start_ops, NULL, 0200);
+MODULE_PARM_DESC(ps4_uvd_start, "Diagnostics: write 1 to start a deferred PS4 UVD block");
+
 static const struct amdgpu_ring_funcs ps4_uvd_ring_funcs;
 static DECLARE_WAIT_QUEUE_HEAD(ps4_uvd_retained_wait);
 static atomic_t ps4_uvd_runtime_ib_test_attempted = ATOMIC_INIT(0);
@@ -498,9 +533,8 @@ static int ps4_uvd_sw_init(struct amdgpu_ip_block *ip_block)
 	return 0;
 }
 
-static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
+static int ps4_uvd_hw_start(struct amdgpu_device *adev)
 {
-	struct amdgpu_device *adev = ip_block->adev;
 	struct amdgpu_ps4_uvd_runtime *s = &adev->ps4_uvd_runtime;
 	struct amdgpu_ring *ring = &adev->uvd.inst[0].ring;
 	u32 i;
@@ -508,14 +542,17 @@ static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
 
 	if (!s->software_ready || s->memory.entered || s->started)
 		return -EPERM;
+	dev_info(adev->dev, "PS4 UVD step: memory_prepare (vmid4 reserved %d)\n", s->vmid_reserved);
 	r = amdgpu_ps4_uvd_memory_prepare(adev, &s->memory, s->vmid_reserved);
 	if (r)
 		return r;
+	dev_info(adev->dev, "PS4 UVD step: map vcpu bo\n");
 	r = amdgpu_ps4_uvd_memory_map_private_gtt(adev, &s->memory,
 		adev->uvd.inst[0].vcpu_bo, adev->uvd.inst[0].gpu_addr,
 		AMDGPU_PS4_UVD_BACKING_BYTES, AMDGPU_PS4_UVD_BACKING_VA);
 	if (r)
 		return r;
+	dev_info(adev->dev, "PS4 UVD step: map ring\n");
 	r = amdgpu_ps4_uvd_memory_map_private_gtt(adev, &s->memory,
 		ring->ring_obj, s->native_ring_gpu_addr,
 		ring->ring_size, AMDGPU_PS4_UVD_RING_VA);
@@ -524,11 +561,13 @@ static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
 	/* Internal firmware/ring/messages and IB-pool backing must stay pinned
 	 * for device lifetime; job leases separately preserve individual spans.
 	 */
+	dev_info(adev->dev, "PS4 UVD step: map scratch\n");
 	r = amdgpu_ps4_uvd_memory_map_private_gtt(adev, &s->memory,
 		s->scratch_bo, s->scratch_gpu_addr, PAGE_SIZE,
 		AMDGPU_PS4_UVD_PRIVATE_VA + 0x30a000);
 	if (r)
 		return r;
+	dev_info(adev->dev, "PS4 UVD step: memory_install (VMID4 page directory)\n");
 	r = amdgpu_ps4_uvd_memory_install(adev, &s->memory);
 	if (r)
 		goto retained_failure;
@@ -538,17 +577,20 @@ static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
 		ring->ring[i] = PACKET0(mmUVD_NO_OP, 0);
 		ring->ring[i + 1] = 0;
 	}
+	dev_info(adev->dev, "PS4 UVD step: runtime_startup (VCPU firmware start)\n");
 	r = amdgpu_ps4_uvd_runtime_startup(adev, adev->uvd.inst[0].cpu_addr,
 		AMDGPU_PS4_UVD_BACKING_BYTES, s->memory.pd.gpu_addr);
 	if (r)
 		goto retained_failure;
 	s->baseline_reset_count = atomic_read(&adev->gpu_reset_counter);
 	amdgpu_ps4_uvd_irq_fault_snapshot(adev, &s->fault_baseline);
+	dev_info(adev->dev, "PS4 UVD step: history check\n");
 	if (!ps4_uvd_history_ok(adev)) {
 		r = -EIO;
 		goto retained_failure;
 	}
 	WRITE_ONCE(s->started, true);
+	dev_info(adev->dev, "PS4 UVD step: ring test\n");
 	r = amdgpu_ring_test_helper(ring);
 	if (r)
 		goto retained_failure;
@@ -560,6 +602,19 @@ static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
 retained_failure:
 	amdgpu_ps4_uvd_runtime_fault(adev, r);
 	return r;
+}
+
+static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+
+	if (ps4_uvd_defer_start) {
+		WRITE_ONCE(ps4_uvd_deferred_adev, adev);
+		dev_info(adev->dev,
+			 "PS4_UVD_RUNTIME DEFERRED: not started; write 1 to /sys/module/amdgpu/parameters/ps4_uvd_start\n");
+		return 0;
+	}
+	return ps4_uvd_hw_start(adev);
 }
 
 static int ps4_uvd_hw_fini(struct amdgpu_ip_block *ip_block)
