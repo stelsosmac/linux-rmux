@@ -35,6 +35,11 @@ struct amdgpu_ps4_uvd_memory {
 	struct amdgpu_ps4_uvd_memory_bo pd;
 	struct amdgpu_ps4_uvd_memory_bo vram_pt;
 	struct amdgpu_ps4_uvd_memory_bo private_pt;
+	/* rmux-15 experiment: VA [0, 16 MiB) -> one zeroed VRAM page. */
+	struct amdgpu_ps4_uvd_memory_bo low_pt;
+	struct amdgpu_ps4_uvd_memory_bo low_page;
+	u64 low_pa;
+	bool low_window;
 	struct amdgpu_bo *gart_bo;
 	void *gart_cpu_addr;
 	u64 gart_gpu_addr;
@@ -98,5 +103,10 @@ int amdgpu_ps4_uvd_memory_refresh(struct amdgpu_device *adev,
  */
 int amdgpu_ps4_uvd_memory_cleanup_pre_entry(struct amdgpu_device *adev,
 				struct amdgpu_ps4_uvd_memory *memory);
+
+/* rmux-15: log what the firmware left in the low-window page (if any). */
+void amdgpu_ps4_uvd_memory_low_dump(struct amdgpu_device *adev,
+				const struct amdgpu_ps4_uvd_memory *memory,
+				const char *when);
 
 #endif

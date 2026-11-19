@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 /* Liverpool UVD fixed-VMID native-address mirror. No post-entry destructor. */
 #include <linux/io.h>
+#include <linux/moduleparam.h>
 #include <linux/overflow.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
@@ -23,6 +24,15 @@
 #define PS4_UVD_MAX_VRAM_BYTES (8ULL * SZ_1G)
 /* Same address restriction as gmc_v7_0_get_vm_pde(), checked before its BUG. */
 #define PS4_UVD_BAD_PDE_ADDR 0xffffff0000000fffULL
+
+/* rmux-15 experiment: back VMID4 VA [0, 16 MiB) with one zeroed VRAM page.
+ * rmux-14 faulted on a firmware READ at VA 0x00FFF000 (client UMC).
+ */
+#define PS4_UVD_LOW_PDES 4ULL
+static bool ps4_uvd_low_window;
+module_param_named(ps4_uvd_low_window, ps4_uvd_low_window, bool, 0644);
+MODULE_PARM_DESC(ps4_uvd_low_window,
+	"PS4 UVD experiment: map VMID4 VA 0..16MiB to one zeroed VRAM page (default 0)");
 
 static bool ps4_uvd_memory_overlap(u64 a, u64 a_end, u64 b, u64 b_end)
 {
@@ -209,6 +219,8 @@ static int ps4_uvd_memory_expected_pde(struct amdgpu_device *adev,
 				const struct amdgpu_ps4_uvd_memory *m,
 				u64 index, u64 *pte)
 {
+	if (m->low_window && index < PS4_UVD_LOW_PDES)
+		return ps4_uvd_memory_pde(adev, m->low_pt.bo, 0, pte);
 	if (index >= m->gart_first_pde &&
 	    index - m->gart_first_pde < m->gart_pdes)
 		return ps4_uvd_memory_pde(adev, m->gart_bo,
@@ -246,6 +258,11 @@ static int ps4_uvd_memory_tables_valid(struct amdgpu_device *adev,
 		if (readq((void __iomem *)m->private_pt.cpu_addr + i * sizeof(u64)) !=
 		    m->private_ptes[i])
 			return -EINVAL;
+	if (m->low_window)
+		for (i = 0; i < PS4_UVD_LEAF_ENTRIES; ++i)
+			if (readq((void __iomem *)m->low_pt.cpu_addr + i * sizeof(u64)) !=
+			    (m->low_pa | m->vram_pte_flags))
+				return -EINVAL;
 	return 0;
 }
 
@@ -349,6 +366,37 @@ int amdgpu_ps4_uvd_memory_prepare(struct amdgpu_device *adev,
 		goto fail;
 	}
 	m->vram_pte_flags = flags;
+	if (READ_ONCE(ps4_uvd_low_window)) {
+		if (m->vram_first_pde < PS4_UVD_LOW_PDES ||
+		    m->private_pde < PS4_UVD_LOW_PDES) {
+			r = -ERANGE;
+			goto fail;
+		}
+		m->low_pt.bytes = PS4_UVD_LEAF_BYTES;
+		m->low_page.bytes = AMDGPU_GPU_PAGE_SIZE;
+		r = ps4_uvd_memory_alloc(adev, &m->low_pt);
+		if (!r)
+			r = ps4_uvd_memory_alloc(adev, &m->low_page);
+		if (r)
+			goto fail;
+		m->low_pa = amdgpu_gmc_vram_mc2pa(adev, m->low_page.gpu_addr);
+		if ((m->low_pa & AMDGPU_GPU_PAGE_MASK) ||
+		    (m->low_pa & ~adev->gmc.pte_addr_mask)) {
+			r = -ERANGE;
+			goto fail;
+		}
+		memset_io((void __iomem *)m->low_page.cpu_addr, 0, m->low_page.bytes);
+		for (i = 0; i < PS4_UVD_LEAF_ENTRIES; ++i)
+			writeq(m->low_pa | flags,
+			       (void __iomem *)m->low_pt.cpu_addr + i * sizeof(u64));
+		m->low_window = true;
+	}
+	dev_info(adev->dev,
+		"PS4 UVD memory: gart %llx+%llx vram %llx+%llx private_pde %llx low_window %d%s pa %llx\n",
+		m->gart_start, m->gart_bytes, m->vram_start, m->vram_bytes,
+		m->private_pde, m->low_window,
+		(m->low_window && m->gart_first_pde < PS4_UVD_LOW_PDES) ?
+		" (overrides low GART in VMID4)" : "", m->low_pa);
 	memset_io((void __iomem *)m->pd.cpu_addr, 0, m->pd.bytes);
 	memset_io((void __iomem *)m->private_pt.cpu_addr, 0, m->private_pt.bytes);
 	for (i = 0; i < m->vram_bytes / AMDGPU_GPU_PAGE_SIZE; ++i)
@@ -591,7 +639,11 @@ int amdgpu_ps4_uvd_memory_cleanup_pre_entry(struct amdgpu_device *adev,
 		if (r)
 			return r;
 	}
-	r = ps4_uvd_memory_drop(&m->private_pt.bo, true);
+	r = ps4_uvd_memory_drop(&m->low_page.bo, true);
+	if (!r)
+		r = ps4_uvd_memory_drop(&m->low_pt.bo, true);
+	if (!r)
+		r = ps4_uvd_memory_drop(&m->private_pt.bo, true);
 	if (!r)
 		r = ps4_uvd_memory_drop(&m->vram_pt.bo, true);
 	if (!r)
@@ -604,4 +656,31 @@ int amdgpu_ps4_uvd_memory_cleanup_pre_entry(struct amdgpu_device *adev,
 	kfree(m->private_ptes);
 	memset(m, 0, sizeof(*m));
 	return 0;
+}
+
+void amdgpu_ps4_uvd_memory_low_dump(struct amdgpu_device *adev,
+				const struct amdgpu_ps4_uvd_memory *m,
+				const char *when)
+{
+	void __iomem *page;
+	u32 i, base, nonzero = 0, first = U32_MAX, w[8];
+
+	if (!adev || !m || !m->low_window || !m->low_page.cpu_addr)
+		return;
+	amdgpu_device_invalidate_hdp(adev, NULL);
+	page = (void __iomem *)m->low_page.cpu_addr;
+	for (i = 0; i < AMDGPU_GPU_PAGE_SIZE / sizeof(u32); ++i) {
+		if (readl(page + i * sizeof(u32))) {
+			++nonzero;
+			if (first == U32_MAX)
+				first = i;
+		}
+	}
+	base = first == U32_MAX ? 0 : (first & ~7U);
+	for (i = 0; i < ARRAY_SIZE(w); ++i)
+		w[i] = readl(page + (base + i) * sizeof(u32));
+	dev_info(adev->dev,
+		"PS4 UVD low window %s: %u nonzero dwords, first +0x%x; +0x%x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+		when, nonzero, first == U32_MAX ? 0 : first * 4, base * 4,
+		w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
 }

@@ -589,6 +589,7 @@ static int ps4_uvd_hw_start(struct amdgpu_device *adev)
 	dev_info(adev->dev, "PS4 UVD step: runtime_startup (VCPU firmware start)\n");
 	r = amdgpu_ps4_uvd_runtime_startup(adev, adev->uvd.inst[0].cpu_addr,
 		AMDGPU_PS4_UVD_BACKING_BYTES, s->memory.pd.gpu_addr);
+	amdgpu_ps4_uvd_memory_low_dump(adev, &s->memory, "after startup");
 	if (r)
 		goto retained_failure;
 	s->baseline_reset_count = atomic_read(&adev->gpu_reset_counter);
