@@ -70,4 +70,6 @@ int amdgpu_ps4_uvd_runtime_startup(struct amdgpu_device *adev,
 	void *backing, size_t bytes, u64 pd_addr);
 
 extern const struct amdgpu_ip_block_version ps4_uvd_ip_block;
+void ps4_uvd_led_mark(struct amdgpu_device *adev, unsigned int step);
+
 #endif
