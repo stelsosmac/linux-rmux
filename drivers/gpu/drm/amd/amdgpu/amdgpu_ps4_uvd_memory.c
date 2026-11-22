@@ -11,6 +11,7 @@
 #include "amdgpu_gmc.h"
 #include "amdgpu_object.h"
 #include "amdgpu_ttm.h"
+#include "amdgpu_ps4_uvd_runtime.h"
 #include "amdgpu_vm.h"
 #include "amdgpu_ps4_uvd_memory.h"
 #include "gmc/gmc_7_1_d.h"
@@ -502,18 +503,30 @@ int amdgpu_ps4_uvd_memory_map_private_gtt(struct amdgpu_device *adev,
 	struct amdgpu_ps4_uvd_memory_mapping *map;
 	int r;
 
+	bool led = private_va == AMDGPU_PS4_UVD_PRIVATE_VA + 0x30a000;
+
 	if (!adev || !m || m->owner != adev || !bo || m->entered)
 		return -EINVAL;
 	r = amdgpu_bo_reserve(bo, false);
 	if (r)
 		return r;
+	if (led)
+		ps4_uvd_led_mark(adev, 11);
 	r = ps4_uvd_memory_private_input(adev, m, bo, native_gpu_addr,
 					 bytes, private_va, &first);
+	if (led)
+		dev_info(adev->dev, "PS4 UVD scratch: private_input -> %d\n", r);
+	if (!r && led)
+		ps4_uvd_led_mark(adev, 12);
 	if (!r)
 		r = ps4_uvd_memory_private_pages(adev, m, bo, native_gpu_addr,
 						 bytes, first, &flags);
+	if (!r && led)
+		ps4_uvd_led_mark(adev, 13);
 	if (!r)
 		r = amdgpu_bo_pin(bo, AMDGPU_GEM_DOMAIN_GTT);
+	if (!r && led)
+		ps4_uvd_led_mark(adev, 14);
 	if (r)
 		goto out;
 	map = &m->maps[m->map_count++];
@@ -529,7 +542,13 @@ int amdgpu_ps4_uvd_memory_map_private_gtt(struct amdgpu_device *adev,
 		writeq(m->private_ptes[slot],
 		       (void __iomem *)m->private_pt.cpu_addr + slot * sizeof(u64));
 	}
+	if (led)
+		ps4_uvd_led_mark(adev, 15);
 	r = ps4_uvd_memory_tables_valid(adev, m);
+	if (led) {
+		dev_info(adev->dev, "PS4 UVD scratch: tables_valid -> %d\n", r);
+		ps4_uvd_led_mark(adev, 16);
+	}
 	if (r)
 		m->prepared = false;
 out:
