@@ -95,8 +95,8 @@ void ps4_uvd_led_mark(struct amdgpu_device *adev, unsigned int step)
 
 	/* step -> payload row (1-based): 1..4 main, 11..16 scratch sub-steps */
 	static const u8 row_of[17] = {
-		[1] = 1, [2] = 2, [3] = 3, [4] = 4,
-		[11] = 5, [12] = 6, [13] = 7, [14] = 10, [15] = 8, [16] = 9,
+		[1] = 1, [2] = 2, [3] = 3, [4] = 4, [16] = 9,
+		[5] = 5, [6] = 6, [7] = 7, [8] = 8, [9] = 10,
 	};
 	unsigned int row;
 
@@ -109,7 +109,9 @@ void ps4_uvd_led_mark(struct amdgpu_device *adev, unsigned int step)
 			  sizeof(ps4_uvd_led_payload[0]), reply, sizeof(reply));
 #endif
 	dev_info(adev->dev, "PS4 UVD led mark %u (icc %d)\n", step, r);
-	msleep(1000);
+	/* 7 and 8 are inside the timed firmware start: no extra delay there. */
+	if (step != 7 && step != 8)
+		msleep(1000);
 }
 #include "vid.h"
 #include "uvd/uvd_5_0_d.h"
@@ -653,6 +655,7 @@ static int ps4_uvd_hw_start(struct amdgpu_device *adev)
 		AMDGPU_PS4_UVD_PRIVATE_VA + 0x30a000);
 	if (r)
 		return r;
+	ps4_uvd_led_mark(adev, 5);
 	dev_info(adev->dev, "PS4 UVD step: memory_install (VMID4 page directory)\n");
 	r = amdgpu_ps4_uvd_memory_install(adev, &s->memory);
 	if (r)
@@ -663,6 +666,7 @@ static int ps4_uvd_hw_start(struct amdgpu_device *adev)
 		ring->ring[i] = PACKET0(mmUVD_NO_OP, 0);
 		ring->ring[i + 1] = 0;
 	}
+	ps4_uvd_led_mark(adev, 6);
 	dev_info(adev->dev, "PS4 UVD step: runtime_startup (VCPU firmware start)\n");
 	r = amdgpu_ps4_uvd_runtime_startup(adev, adev->uvd.inst[0].cpu_addr,
 		AMDGPU_PS4_UVD_BACKING_BYTES, s->memory.pd.gpu_addr);
@@ -671,6 +675,7 @@ static int ps4_uvd_hw_start(struct amdgpu_device *adev)
 		goto retained_failure;
 	s->baseline_reset_count = atomic_read(&adev->gpu_reset_counter);
 	amdgpu_ps4_uvd_irq_fault_snapshot(adev, &s->fault_baseline);
+	ps4_uvd_led_mark(adev, 9);
 	dev_info(adev->dev, "PS4 UVD step: history check\n");
 	if (!ps4_uvd_history_ok(adev)) {
 		r = -EIO;

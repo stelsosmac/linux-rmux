@@ -3621,6 +3621,7 @@ ps4_ready_core_run(struct amdgpu_device *adev, void *r1_cpu,
 	dev_info(adev->dev,
 		"PS4_UVD_READY BEGIN hypothesis=public5/6 vmid=4 pd=%llx backing=%zx payload=%u crc=%08x clocks=10000/10000 poll_state=%d; SDMA precheck is not UVD evidence\n",
 		pd_addr, backing_size, PS4_READY_PAYLOAD_BYTES, op->crc, ps4_uvd_poll_state);
+	ps4_uvd_led_mark(adev, 7);
 	/* GMC7 has no global monotonic fault counter for this PASID0/vm=NULL
 	 * probe: its cached fault_info is updated only for registered VMs. Reading
 	 * status cannot detect an IRQ-acknowledged transient. UART remains needed.
@@ -3688,6 +3689,7 @@ ps4_ready_core_run(struct amdgpu_device *adev, void *r1_cpu,
 		return ps4_ready_core_finish(op, PS4_READY_CORE_RBC_RELEASE_GUARD, -EIO);
 	}
 	dev_info(adev->dev, "PS4_UVD_READY RBC_RELEASE verified remaining blocks held, fetch guards unchanged\n");
+	ps4_uvd_led_mark(adev, 8);
 	WREG32(mmUVD_LMI_CTRL2, RREG32(mmUVD_LMI_CTRL2) &
 		~UVD_LMI_CTRL2__STALL_ARB_UMC_MASK);
 	WREG32(mmUVD_SOFT_RESET, RREG32(mmUVD_SOFT_RESET) &
