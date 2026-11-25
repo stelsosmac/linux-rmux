@@ -167,6 +167,22 @@ static int ps4_uvd_start_set(const char *val, const struct kernel_param *kp)
 static const struct kernel_param_ops ps4_uvd_start_ops = {
 	.set = ps4_uvd_start_set,
 };
+
+/* rmux-20: start the deferred block automatically after N seconds. */
+static unsigned int ps4_uvd_delay_start __ro_after_init;
+module_param_named(ps4_uvd_delay_start, ps4_uvd_delay_start, uint, 0444);
+MODULE_PARM_DESC(ps4_uvd_delay_start,
+	"Diagnostics: run the deferred PS4 UVD start automatically this many seconds after hw_init (default 0 = off)");
+
+static void ps4_uvd_delay_start_fn(struct work_struct *work)
+{
+	struct amdgpu_device *adev = READ_ONCE(ps4_uvd_deferred_adev);
+
+	if (adev)
+		dev_info(adev->dev, "PS4 UVD step: timed start fires now\n");
+	ps4_uvd_start_set("1", NULL);
+}
+static DECLARE_DELAYED_WORK(ps4_uvd_delay_work, ps4_uvd_delay_start_fn);
 module_param_cb(ps4_uvd_start, &ps4_uvd_start_ops, NULL, 0200);
 MODULE_PARM_DESC(ps4_uvd_start, "Diagnostics: write 1 to start a deferred PS4 UVD block");
 
@@ -700,6 +716,15 @@ static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
 
+	if (ps4_uvd_delay_start) {
+		WRITE_ONCE(ps4_uvd_deferred_adev, adev);
+		dev_info(adev->dev,
+			 "PS4_UVD_RUNTIME TIMED: start scheduled in %u s\n",
+			 ps4_uvd_delay_start);
+		schedule_delayed_work(&ps4_uvd_delay_work,
+				      secs_to_jiffies(ps4_uvd_delay_start));
+		return 0;
+	}
 	if (ps4_uvd_defer_start) {
 		WRITE_ONCE(ps4_uvd_deferred_adev, adev);
 		dev_info(adev->dev,
