@@ -94,9 +94,8 @@ void ps4_uvd_led_mark(struct amdgpu_device *adev, unsigned int step)
 	int r = -ENODEV;
 
 	/* step -> payload row (1-based): 1..4 main, 11..16 scratch sub-steps */
-	static const u8 row_of[17] = {
-		[1] = 1, [2] = 2, [3] = 3, [4] = 4, [16] = 9,
-		[5] = 5, [6] = 6, [7] = 7, [8] = 8, [9] = 10,
+	static const u8 row_of[23] = {
+		[9] = 1, [20] = 2, [21] = 3, [22] = 8,
 	};
 	unsigned int row;
 
@@ -110,8 +109,7 @@ void ps4_uvd_led_mark(struct amdgpu_device *adev, unsigned int step)
 #endif
 	dev_info(adev->dev, "PS4 UVD led mark %u (icc %d)\n", step, r);
 	/* 7 and 8 are inside the timed firmware start: no extra delay there. */
-	if (step != 7 && step != 8)
-		msleep(1000);
+	msleep(1000);
 }
 #include "vid.h"
 #include "uvd/uvd_5_0_d.h"
@@ -682,10 +680,12 @@ static int ps4_uvd_hw_start(struct amdgpu_device *adev)
 		goto retained_failure;
 	}
 	WRITE_ONCE(s->started, true);
+	ps4_uvd_led_mark(adev, 20);
 	dev_info(adev->dev, "PS4 UVD step: ring test\n");
 	r = amdgpu_ring_test_helper(ring);
 	if (r)
 		goto retained_failure;
+	ps4_uvd_led_mark(adev, 21);
 	dev_info(adev->dev,
 		"PS4_UVD_RUNTIME QUEUE_READY ring=%u credits=1 AVC experimental; normal userspace submission enabled\n",
 		ring->idx);
@@ -711,6 +711,7 @@ static int ps4_uvd_hw_init(struct amdgpu_ip_block *ip_block)
 		int r = ps4_uvd_hw_start(adev);
 
 		dev_info(adev->dev, "PS4 UVD step: boot-time start -> %d\n", r);
+		ps4_uvd_led_mark(adev, 22);
 		WRITE_ONCE(ps4_uvd_led_trace, false);
 		return r;
 	}
